@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Universal C2 Wireless Network Node Daemon (Proof of Concept)
-Runs on all PCs (PC0 Master and PC1-PC5 Workers).
+Runs on all PCs (PC0 Master and PC1-PCn Workers).
 Zero external pip dependencies (Pure Python 3 standard library).
 """
 

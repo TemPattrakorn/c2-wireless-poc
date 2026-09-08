@@ -87,21 +87,15 @@ Connect each remote device (PC, laptop, SBC, or companion computer) to the wirel
 # On Node 1
 ./scripts/run_worker.sh node-1
 
-# On Node 2
-./scripts/run_worker.sh node-2
+# On Node n
+./scripts/run_worker.sh node-n
 
-# On Node 3
-./scripts/run_worker.sh node-3
-
-# On Node 4
-./scripts/run_worker.sh node-4
-
-# On Node 5 (Remote Node across a routed subnet, VLAN, or multi-hop link):
+# Remote Node across a routed subnet, VLAN, or multi-hop link:
 # Pass the Master IP explicitly for directed unicast registration:
-./scripts/run_worker.sh node-5 <MASTER_IP>
+./scripts/run_worker.sh node-n <MASTER_IP>
 ```
 
-Within 1 second, every active node will automatically appear on the C2 Master's dashboard grid!
+Within 1 second, every active node will automatically appear on the C2 Master's dashboard grid.
 
 ---
 

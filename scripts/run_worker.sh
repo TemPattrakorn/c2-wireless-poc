@@ -1,5 +1,5 @@
 #!/bin/bash
-# Launch C2 Remote Worker Node (PC1 - PC5)
+# Launch C2 Remote Worker Node (PC1 - PCn)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="$SCRIPT_DIR"
 
