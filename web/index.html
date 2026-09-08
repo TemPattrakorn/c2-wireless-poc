@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C2 Wireless Command & Control Dashboard</title>
+  <style>
+    :root {
+      --bg-main: #f8fafc;
+      --bg-surface: #ffffff;
+      --border-color: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #16a34a;
+      --success-bg: #dcfce7;
+      --warning: #d97706;
+      --warning-bg: #fef3c7;
+      --danger: #dc2626;
+      --danger-bg: #fee2e2;
+      --accent: #0284c7;
+      --card-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+      --card-shadow-hover: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      line-height: 1.5;
+      padding: 1.5rem;
+    }
+
+    .container { max-width: 1400px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* Header Bar */
+    .header-bar {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1.25rem 1.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: var(--card-shadow);
+    }
+    .header-title h1 { font-size: 1.35rem; font-weight: 700; color: var(--text-main); letter-spacing: -0.02em; }
+    .header-title .subtitle { font-size: 0.875rem; color: var(--text-muted); margin-top: 0.2rem; }
+    .header-meta { display: flex; align-items: center; gap: 1rem; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .badge-live { background: var(--success-bg); color: var(--success); }
+    .badge-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+    /* Global Actions */
+    .global-actions { display: flex; gap: 0.75rem; }
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-success { background: var(--success); color: white; }
+    .btn-success:hover { opacity: 0.9; }
+    .btn-warning { background: var(--warning); color: white; }
+    .btn-warning:hover { opacity: 0.9; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-danger:hover { opacity: 0.9; }
+    .btn-outline { background: white; border-color: var(--border-color); color: var(--text-main); }
+    .btn-outline:hover { background: #f1f5f9; }
+
+    /* Layout Grid: Left (Nodes & Log), Right (Data Transfer Benchmark) */
+    .dashboard-layout {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 1.5rem;
+    }
+    @media (max-width: 1024px) {
+      .dashboard-layout { grid-template-columns: 1fr; }
+    }
+
+    /* Section Cards */
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1.25rem;
+      box-shadow: var(--card-shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.75rem;
+    }
+    .card-header h2 { font-size: 1.05rem; font-weight: 700; color: var(--text-main); }
+
+    /* Node Grid */
+    .nodes-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .node-card {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1rem;
+      background: #fafafa;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      transition: box-shadow 0.15s ease;
+    }
+    .node-card:hover { box-shadow: var(--card-shadow-hover); }
+    .node-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .node-id { font-weight: 700; font-size: 1rem; color: var(--text-main); }
+    .node-ip { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; }
+    
+    .status-pill {
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .status-SAFE { background: var(--success-bg); color: var(--success); }
+    .status-ARMED { background: var(--warning-bg); color: var(--warning); }
+    .status-ESTOP { background: var(--danger-bg); color: var(--danger); }
+    .status-FAILSAFE_ACTIVE { background: var(--danger-bg); color: var(--danger); animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .metrics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.825rem;
+    }
+    .metrics-table td { padding: 0.2rem 0; }
+    .metrics-table td:last-child { text-align: right; font-weight: 600; font-family: monospace; }
+
+    .node-actions {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.25rem;
+    }
+    .node-actions button {
+      flex: 1;
+      padding: 0.35rem 0.5rem;
+      font-size: 0.75rem;
+      justify-content: center;
+    }
+
+    /* Data Transfer Benchmark Panel */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .form-group label {
+      font-size: 0.825rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    select, input {
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.875rem;
+      background: white;
+      color: var(--text-main);
+    }
+    select:focus, input:focus {
+      outline: 2px solid var(--primary);
+      border-color: transparent;
+    }
+
+    .button-group {
+      display: flex;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .button-group button {
+      flex: 1;
+      border: none;
+      border-radius: 0;
+      background: white;
+      color: var(--text-muted);
+      padding: 0.5rem;
+    }
+    .button-group button.active {
+      background: var(--primary);
+      color: white;
+    }
+
+    .benchmark-result {
+      background: #f1f5f9;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-size: 0.825rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .result-stat {
+      display: flex;
+      justify-content: space-between;
+    }
+    .result-stat span:first-child { color: var(--text-muted); }
+    .result-stat span:last-child { font-weight: 700; font-family: monospace; }
+
+    .payload-preview {
+      background: #1e293b;
+      color: #e2e8f0;
+      font-family: monospace;
+      font-size: 0.75rem;
+      padding: 0.6rem;
+      border-radius: 4px;
+      max-height: 140px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Event Log Feed */
+    .log-feed {
+      background: #fafafa;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0.75rem;
+      height: 180px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 0.775rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .log-line { display: flex; gap: 0.5rem; }
+    .log-time { color: var(--text-muted); }
+    .log-msg { color: var(--text-main); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header-bar">
+      <div class="header-title">
+        <h1>C2 Wireless Command & Control Dashboard</h1>
+        <div class="subtitle">Distributed Proof-of-Concept Testbed | ASUS RT-AX1800HP Backbone</div>
+      </div>
+      <div class="header-meta">
+        <div class="badge badge-live">
+          <span class="badge-dot"></span>
+          <span id="wsStatus">Connecting...</span>
+        </div>
+        <div class="global-actions">
+          <button class="btn-warning" onclick="broadcastCommand('ARM')">ARM ALL</button>
+          <button class="btn-success" onclick="broadcastCommand('SAFE')">SAFE ALL</button>
+          <button class="btn-danger" onclick="broadcastCommand('ESTOP')">EMERGENCY STOP</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Layout -->
+    <div class="dashboard-layout">
+      <!-- Left Column: Active Nodes & Event Logs -->
+      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <!-- Active Nodes Grid -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Active Wireless Nodes (<span id="nodeCount">0</span>)</h2>
+            <button class="btn-outline" onclick="fetchNodeStatus()">Refresh</button>
+          </div>
+          <div class="nodes-grid" id="nodesGrid">
+            <div style="color: var(--text-muted); font-size: 0.875rem; padding: 1rem;">
+              Listening for node beacons over UDP 9876...
+            </div>
+          </div>
+        </div>
+
+        <!-- Activity & Communication Log -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Activity & Network Log</h2>
+            <button class="btn-outline" onclick="clearLog()">Clear</button>
+          </div>
+          <div class="log-feed" id="logFeed"></div>
+        </div>
+      </div>
+
+      <!-- Right Column: Interactive Data Transfer Test Panel -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Data Transfer Lab (HTTP & WebSocket)</h2>
+        </div>
+        
+        <div class="form-group">
+          <label for="targetNode">Target Node</label>
+          <select id="targetNode">
+            <option value="">Select target node...</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Transfer Protocol</label>
+          <div class="button-group">
+            <button id="protoHttp" class="active" onclick="selectProtocol('HTTP')">HTTP POST (JSON)</button>
+            <button id="protoWs" onclick="selectProtocol('WS')">WebSocket Stream</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Payload Size Preset</label>
+          <div class="button-group">
+            <button class="size-btn active" onclick="selectPayloadSize('1KB', 1024, this)">1 KB</button>
+            <button class="size-btn" onclick="selectPayloadSize('16KB', 16384, this)">16 KB</button>
+            <button class="size-btn" onclick="selectPayloadSize('64KB', 65536, this)">64 KB</button>
+            <button class="size-btn" onclick="selectPayloadSize('256KB', 262144, this)">256 KB</button>
+          </div>
+        </div>
+
+        <button class="btn-primary" style="justify-content: center; padding: 0.65rem;" onclick="runDataTransferBenchmark()">
+          Run Benchmark Transfer
+        </button>
+
+        <!-- Benchmark Results Display -->
+        <div class="benchmark-result" id="benchResult">
+          <div class="result-stat">
+            <span>Status:</span>
+            <span id="benchStatus">Ready</span>
+          </div>
+          <div class="result-stat">
+            <span>Round-Trip Latency:</span>
+            <span id="benchRtt">-</span>
+          </div>
+          <div class="result-stat">
+            <span>Transfer Throughput:</span>
+            <span id="benchThroughput">-</span>
+          </div>
+          <div class="result-stat">
+            <span>Bytes Transferred:</span>
+            <span id="benchBytes">-</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Echo Response Payload</label>
+          <pre class="payload-preview" id="payloadPreview">No transfer executed yet.</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State & Config
+    let selectedProtocol = 'HTTP';
+    let selectedSizeLabel = '1KB';
+    let selectedSizeBytes = 1024;
+    let peersCache = {};
+    let ws = null;
+
+    // Initialize
+    window.addEventListener('DOMContentLoaded', () => {
+      addLog('System initialized. Connecting to C2 Master WebSocket...');
+      connectWebSocket();
+      fetchNodeStatus();
+      setInterval(fetchNodeStatus, 2000);
+    });
+
+    // Logging
+    function addLog(msg) {
+      const feed = document.getElementById('logFeed');
+      const timeStr = new Date().toLocaleTimeString();
+      const div = document.createElement('div');
+      div.className = 'log-line';
+      div.innerHTML = `<span class="log-time">[${timeStr}]</span><span class="log-msg">${msg}</span>`;
+      feed.appendChild(div);
+      feed.scrollTop = feed.scrollHeight;
+    }
+    function clearLog() {
+      document.getElementById('logFeed').innerHTML = '';
+    }
+
+    // Protocol & Payload Selection
+    function selectProtocol(proto) {
+      selectedProtocol = proto;
+      document.getElementById('protoHttp').className = proto === 'HTTP' ? 'active' : '';
+      document.getElementById('protoWs').className = proto === 'WS' ? 'active' : '';
+      addLog(`Selected transfer protocol: ${proto}`);
+    }
+
+    function selectPayloadSize(label, bytes, btn) {
+      selectedSizeLabel = label;
+      selectedSizeBytes = bytes;
+      document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    // WebSocket Telemetry Connection
+    function connectWebSocket() {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${window.location.host}/ws`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById('wsStatus').innerText = 'Online (Live Stream)';
+        addLog('Connected to C2 Telemetry WebSocket stream.');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'telemetry_update') {
+            updateNodesGrid(data.peers);
+          } else if (data.type === 'ws_benchmark_ack') {
+            handleWsBenchmarkAck(data);
+          }
+        } catch (e) {
+          console.error('WS parse error:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        document.getElementById('wsStatus').innerText = 'Offline (Reconnecting...)';
+        setTimeout(connectWebSocket, 2500);
+      };
+    }
+
+    // Fetch Status via HTTP REST fallback
+    async function fetchNodeStatus() {
+      try {
+        const resp = await fetch('/api/status');
+        if (resp.ok) {
+          const data = await resp.json();
+          updateNodesGrid(data.peers);
+        }
+      } catch (err) {
+        // Server might be reloading
+      }
+    }
+
+    // Render Node Grid
+    function updateNodesGrid(peers) {
+      if (!peers) return;
+      peersCache = peers;
+      const grid = document.getElementById('nodesGrid');
+      const targetSelect = document.getElementById('targetNode');
+      const nodeKeys = Object.keys(peers);
+      document.getElementById('nodeCount').innerText = nodeKeys.length;
+
+      if (nodeKeys.length === 0) {
+        grid.innerHTML = '<div style="color: var(--text-muted); padding: 1rem;">Waiting for node beacons...</div>';
+        return;
+      }
+
+      // Update Target Dropdown
+      const currentTarget = targetSelect.value;
+      targetSelect.innerHTML = '<option value="">Select target node...</option>';
+      nodeKeys.forEach(id => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.text = `${id} (${peers[id].ip}:${peers[id].http_port})`;
+        if (id === currentTarget) opt.selected = true;
+        targetSelect.appendChild(opt);
+      });
+
+      // Update Cards
+      grid.innerHTML = '';
+      nodeKeys.forEach(id => {
+        const node = peers[id];
+        const card = document.createElement('div');
+        card.className = 'node-card';
+        card.innerHTML = `
+          <div class="node-card-top">
+            <div>
+              <div class="node-id">${node.node_id}</div>
+              <div class="node-ip">${node.ip}:${node.http_port} (${node.role})</div>
+            </div>
+            <span class="status-pill status-${node.state}">${node.state}</span>
+          </div>
+          <table class="metrics-table">
+            <tr><td>Round-Trip Time</td><td style="color: ${node.rtt_ms < 20 ? 'var(--success)' : 'var(--warning)'}">${node.rtt_ms} ms</td></tr>
+            <tr><td>Wireless Jitter</td><td>${node.jitter_ms} ms</td></tr>
+            <tr><td>Packet Loss</td><td style="color: ${node.packet_loss_pct > 0 ? 'var(--danger)' : 'var(--text-main)'}">${node.packet_loss_pct}%</td></tr>
+            <tr><td>CPU Load / Uptime</td><td>${node.cpu_load} / ${Math.round(node.uptime_sec)}s</td></tr>
+          </table>
+          <div class="node-actions">
+            <button class="btn-outline" onclick="sendNodeCommand('${id}', 'PING')">Ping</button>
+            <button class="btn-warning" onclick="sendNodeCommand('${id}', 'ARM')">Arm</button>
+            <button class="btn-success" onclick="sendNodeCommand('${id}', 'SAFE')">Safe</button>
+            <button class="btn-danger" onclick="sendNodeCommand('${id}', 'ESTOP')">E-Stop</button>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    }
+
+    // Node Commands (HTTP POST)
+    async function sendNodeCommand(nodeId, cmd) {
+      const node = peersCache[nodeId];
+      if (!node) return;
+      addLog(`Sending command [${cmd}] to ${nodeId}...`);
+
+      try {
+        // Direct to worker's HTTP API (CORS enabled)
+        const url = `http://${node.ip}:${node.http_port}/api/command`;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd, target_id: nodeId })
+        });
+        const resJson = await resp.json();
+        addLog(`[${nodeId}] Response: ${JSON.stringify(resJson)}`);
+        fetchNodeStatus();
+      } catch (err) {
+        addLog(`Error executing command on ${nodeId}: ${err}`);
+      }
+    }
+
+    async function broadcastCommand(cmd) {
+      addLog(`Broadcasting global command: [${cmd}]`);
+      for (const id of Object.keys(peersCache)) {
+        sendNodeCommand(id, cmd);
+      }
+    }
+
+    // Benchmark Execution (HTTP POST vs. WebSocket)
+    let wsBenchStartTime = 0;
+    let wsBenchBytes = 0;
+
+    async function runDataTransferBenchmark() {
+      const targetId = document.getElementById('targetNode').value;
+      if (!targetId) {
+        alert('Please select a target node from the dropdown.');
+        return;
+      }
+      const node = peersCache[targetId];
+      if (!node) return;
+
+      document.getElementById('benchStatus').innerText = 'Transferring...';
+      document.getElementById('benchStatus').style.color = 'var(--primary)';
+
+      // Generate synthetic test payload of specified size
+      const dummyChunk = 'X'.repeat(64);
+      const repeatCount = Math.floor(selectedSizeBytes / 64);
+      const testData = dummyChunk.repeat(repeatCount);
+
+      if (selectedProtocol === 'HTTP') {
+        // HTTP POST Data Transfer Test
+        const startTs = performance.now();
+        const clientSendTs = Date.now() / 1000.0;
+        const payload = {
+          preset: selectedSizeLabel,
+          client_timestamp: clientSendTs,
+          data: testData
+        };
+
+        try {
+          const url = `http://${node.ip}:${node.http_port}/api/benchmark`;
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const durationMs = performance.now() - startTs;
+          const resJson = await resp.json();
+
+          const totalBytes = JSON.stringify(payload).length;
+          const throughputKbps = (totalBytes / 1024) / (durationMs / 1000);
+
+          document.getElementById('benchStatus').innerText = 'HTTP Success';
+          document.getElementById('benchStatus').style.color = 'var(--success)';
+          document.getElementById('benchRtt').innerText = `${durationMs.toFixed(1)} ms`;
+          document.getElementById('benchThroughput').innerText = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
+          document.getElementById('benchBytes').innerText = `${(totalBytes/1024).toFixed(1)} KB`;
+          document.getElementById('payloadPreview').innerText = JSON.stringify(resJson, null, 2);
+
+          addLog(`HTTP Benchmark to ${targetId}: ${totalBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
+        } catch (err) {
+          document.getElementById('benchStatus').innerText = 'HTTP Failed';
+          document.getElementById('benchStatus').style.color = 'var(--danger)';
+          addLog(`HTTP Benchmark error: ${err}`);
+        }
+      } else {
+        // WebSocket Streaming Data Transfer Test
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          alert('Master WebSocket is not connected.');
+          return;
+        }
+
+        wsBenchStartTime = performance.now();
+        const payload = {
+          action: 'ws_benchmark',
+          target_id: targetId,
+          preset: selectedSizeLabel,
+          timestamp: Date.now() / 1000.0,
+          data: testData
+        };
+        const rawStr = JSON.stringify(payload);
+        wsBenchBytes = rawStr.length;
+        ws.send(rawStr);
+      }
+    }
+
+    function handleWsBenchmarkAck(data) {
+      const durationMs = performance.now() - wsBenchStartTime;
+      const throughputKbps = (wsBenchBytes / 1024) / (durationMs / 1000);
+
+      document.getElementById('benchStatus').innerText = 'WebSocket Success';
+      document.getElementById('benchStatus').style.color = 'var(--success)';
+      document.getElementById('benchRtt').innerText = `${durationMs.toFixed(1)} ms`;
+      document.getElementById('benchThroughput').innerText = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
+      document.getElementById('benchBytes').innerText = `${(wsBenchBytes/1024).toFixed(1)} KB`;
+      document.getElementById('payloadPreview').innerText = JSON.stringify(data, null, 2);
+
+      addLog(`WebSocket Benchmark completed: ${wsBenchBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
+    }
+  </script>
+</body>
+</html>
