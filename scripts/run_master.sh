@@ -10,8 +10,12 @@ echo "=========================================================="
 echo "Starting C2 Wireless Master Ground Station [${NODE_ID}]"
 echo "Web UI Dashboard: http://localhost:${HTTP_PORT}"
 echo "=========================================================="
+PYTHON_BIN="python3"
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+fi
 
-python3 "$SCRIPT_DIR/c2_node.py" \
+"$PYTHON_BIN" "$SCRIPT_DIR/c2_node.py" \
   --id "${NODE_ID}" \
   --role master \
   --port-http "${HTTP_PORT}"

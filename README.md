@@ -28,13 +28,14 @@ A lightweight, zero-dependency software suite to validate and benchmark wireless
               └─────────────────┘ └───────────────┘ └───────────────┘
 ```
 
-* **Zero External Dependencies:** Built 100% using Python 3's standard library (`asyncio`, `socket`, `hashlib`, `struct`, `json`). No `pip install` required on any machine.
+* **Lightweight & Production-Ready:** Powered by Python 3 and `aiohttp` for asynchronous HTTP REST endpoints and live WebSocket streaming.
+* **Strictly Typed & Validated (`c2_protocol.py`):** Comprehensive schema validation and input boundary enforcement against untrusted network inputs (UDP beacons, TCP command frames, HTTP payloads, WebSocket messages) with `mypy` strict mode.
 * **Broad Hardware Compatibility:** Runs out-of-the-box on Linux, macOS, and Windows across commodity PCs, laptops, mini-PCs (Intel NUC), single-board computers (Raspberry Pi, NVIDIA Jetson, Orange Pi), and robotics/drone companion computers.
 * **Network & Router Agnostic:** Works across any standard TCP/IP network: commercial Wi-Fi routers (Wi-Fi 5/6/6E/7), enterprise access points (APs), ad-hoc mesh networks, cellular routers, or wired Ethernet.
 * **Auto-Discovery & Link Health:** High-frequency UDP beacons (1 Hz) continuously monitor Round-Trip Time (RTT), wireless jitter, and sequence-based packet loss.
 * **Dual-Channel Data Transfer:**
   * **HTTP POST (JSON):** On-demand request/response for state inspection, command dispatch, and throughput benchmarking.
-  * **Native WebSocket (RFC 6455):** Live 2 Hz telemetry streaming and duplex data transfer testing.
+  * **WebSocket Telemetry Stream:** Live 2 Hz telemetry streaming and duplex data transfer testing.
 * **Automated Fail-Safe:** If a worker node loses communication with the C2 Master for > 4.0 seconds, it autonomously switches its operational state to `FAILSAFE_ACTIVE` / `SAFE`.
 
 ---
@@ -138,3 +139,43 @@ curl -X POST http://<NODE_IP>:8080/api/benchmark \
 ```
 
 *(Replace `<NODE_IP>` with the actual IP address of the target worker node, e.g., `192.168.1.20`)*
+
+---
+
+## 5. Development, Type Checking & Testing
+
+### Installation
+
+Create a virtual environment and install dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt       # Runtime dependencies (aiohttp)
+pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest)
+```
+
+### Static Type Checking (mypy)
+
+Strict static typing is enforced across all core modules and tests:
+
+```bash
+.venv/bin/mypy c2_node.py c2_protocol.py config.py test_e2e.py tests/
+```
+
+### Unit & Untrusted Input Parser Tests (pytest)
+
+Run the test suite covering input validation edge cases (malformed JSON, corrupted data, type mismatches, out-of-range ports, injection attempts) and HTTP/WebSocket endpoints:
+
+```bash
+.venv/bin/pytest tests/ -v
+```
+
+### End-to-End Automated System Verification
+
+Run the full multi-process end-to-end integration test (UDP auto-discovery, HTTP commands, data transfer benchmarks, WebSocket telemetry stream, static UI serving, and failsafe watchdog):
+
+```bash
+.venv/bin/python3 test_e2e.py
+```
+

@@ -14,8 +14,12 @@ if [ -n "$MASTER_IP" ]; then
   echo "Target Master IP (Unicast): ${MASTER_IP}"
 fi
 echo "=========================================================="
+PYTHON_BIN="python3"
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+fi
 
-CMD="python3 \"$SCRIPT_DIR/c2_node.py\" --id \"${NODE_ID}\" --role worker --port-http ${HTTP_PORT}"
+CMD="\"$PYTHON_BIN\" \"$SCRIPT_DIR/c2_node.py\" --id \"${NODE_ID}\" --role worker --port-http ${HTTP_PORT}"
 
 if [ -n "$MASTER_IP" ]; then
   CMD="$CMD --master-ip ${MASTER_IP}"

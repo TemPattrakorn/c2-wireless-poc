@@ -2,25 +2,36 @@
 """
 Universal C2 Wireless Network Node Daemon (Proof of Concept)
 Runs on all PCs (PC0 Master and PC1-PCn Workers).
-Zero external pip dependencies (Pure Python 3 standard library).
+Uses aiohttp for robust HTTP REST and WebSocket streaming.
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import os
 import platform
 import socket
-import struct
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from aiohttp import WSCloseCode, WSMsgType, web
+
+from c2_protocol import (
+    BeaconMessage,
+    C2CommandRequest,
+    C2ParseError,
+    parse_beacon_datagram,
+    parse_http_benchmark_payload,
+    parse_http_command_payload,
+    parse_tcp_command_frame,
+    parse_ws_message,
+)
 from config import config
 
 logging.basicConfig(
@@ -51,81 +62,8 @@ class NodeMetrics:
     uptime_sec: float = 0.0
     cpu_load: float = 0.0
     last_seq: int = 0
-    seq_history: List[int] = field(default_factory=list)
+    seq_history: List[Tuple[int, int]] = field(default_factory=list)
     rtt_history: List[float] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Pure Python RFC 6455 WebSocket Implementation (Standard Library Only)
-# ---------------------------------------------------------------------------
-WS_MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-
-def compute_ws_accept(sec_key: str) -> str:
-    sha1 = hashlib.sha1((sec_key.strip() + WS_MAGIC_GUID).encode("utf-8")).digest()
-    return base64.b64encode(sha1).decode("ascii")
-
-
-def encode_ws_frame(message: str, opcode: int = 0x1) -> bytes:
-    """Encode an unmasked server-to-client WebSocket frame."""
-    payload = message.encode("utf-8")
-    length = len(payload)
-    header = bytearray()
-    header.append(0x80 | opcode)  # FIN + Opcode
-
-    if length < 126:
-        header.append(length)
-    elif length <= 0xFFFF:
-        header.append(126)
-        header.extend(struct.pack("!H", length))
-    else:
-        header.append(127)
-        header.extend(struct.pack("!Q", length))
-
-    return bytes(header) + payload
-
-
-async def read_ws_frame(reader: asyncio.StreamReader) -> Optional[tuple[int, str]]:
-    """Decode a masked client-to-server WebSocket frame."""
-    try:
-        head = await reader.readexactly(2)
-    except (asyncio.IncompleteReadError, ConnectionResetError):
-        return None
-
-    fin_and_opcode = head[0]
-    opcode = fin_and_opcode & 0x0F
-    mask_and_len = head[1]
-    is_masked = (mask_and_len & 0x80) != 0
-    payload_len = mask_and_len & 0x7F
-
-    if payload_len == 126:
-        len_bytes = await reader.readexactly(2)
-        payload_len = struct.unpack("!H", len_bytes)[0]
-    elif payload_len == 127:
-        len_bytes = await reader.readexactly(8)
-        payload_len = struct.unpack("!Q", len_bytes)[0]
-
-    masking_key = b""
-    if is_masked:
-        masking_key = await reader.readexactly(4)
-
-    payload_data = await reader.readexactly(payload_len)
-
-    if is_masked:
-        unmasked = bytearray(payload_len)
-        for i in range(payload_len):
-            unmasked[i] = payload_data[i] ^ masking_key[i % 4]
-        payload_data = bytes(unmasked)
-
-    if opcode == 0x8:  # Connection close
-        return (0x8, "")
-    elif opcode == 0x9:  # Ping
-        return (0x9, "")
-
-    try:
-        return (opcode, payload_data.decode("utf-8"))
-    except UnicodeDecodeError:
-        return (opcode, payload_data.decode("latin1"))
 
 
 # ---------------------------------------------------------------------------
@@ -134,17 +72,21 @@ async def read_ws_frame(reader: asyncio.StreamReader) -> Optional[tuple[int, str
 class UDPBeaconProtocol(asyncio.DatagramProtocol):
     def __init__(self, daemon: "C2NodeDaemon"):
         self.daemon = daemon
-        self.transport = None
+        self.transport: Optional[asyncio.DatagramTransport] = None
 
-    def connection_made(self, transport):
-        self.transport = transport
-        sock = self.transport.get_extra_info("socket")
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        if isinstance(transport, asyncio.DatagramTransport):
+            self.transport = transport
+            sock: Optional[socket.socket] = transport.get_extra_info("socket")
+            if sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-    def datagram_received(self, data, addr):
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
         try:
-            msg = json.loads(data.decode("utf-8"))
-            self.daemon.handle_incoming_beacon(msg, addr[0])
+            beacon = parse_beacon_datagram(data)
+            self.daemon.handle_incoming_beacon(beacon, addr[0])
+        except C2ParseError as e:
+            logger.debug(f"Rejected untrusted beacon from {addr}: {e}")
         except Exception as e:
             logger.debug(f"Malformed beacon from {addr}: {e}")
 
@@ -180,34 +122,45 @@ class C2NodeDaemon:
 
         # Peer registry & active WebSocket subscribers
         self.peers: Dict[str, NodeMetrics] = {}
-        self.ws_clients: Set[asyncio.StreamWriter] = set()
+        self.ws_clients: Set[web.WebSocketResponse] = set()
 
         # Web static files directory
         self.web_dir = Path(__file__).parent / "web"
+
+        # aiohttp web app and runner
+        self.app: web.Application = self._create_web_app()
+        self.app_runner: Optional[web.AppRunner] = None
 
     def _determine_local_ip(self) -> str:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
+            ip = str(s.getsockname()[0])
         except Exception:
             ip = "127.0.0.1"
         finally:
             s.close()
         return ip
 
+    def _cors_headers(self) -> Dict[str, str]:
+        return {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
+
     # --- UDP Discovery & Quality Math ---
-    def handle_incoming_beacon(self, msg: dict, sender_ip: str):
-        sender_id = msg.get("node_id")
+    def handle_incoming_beacon(self, beacon: BeaconMessage, sender_ip: str) -> None:
+        sender_id = beacon.node_id
         if not sender_id or sender_id == self.node_id:
             return
 
         now = time.time()
-        sender_role = msg.get("role", "worker")
-        seq = msg.get("seq", 0)
-        sent_ts = msg.get("timestamp", now)
-        http_p = msg.get("http_port", config.http_worker_port)
-        tcp_p = msg.get("tcp_port", config.tcp_cmd_port)
+        sender_role = beacon.role
+        seq = beacon.seq
+        sent_ts = beacon.timestamp
+        http_p = beacon.http_port
+        tcp_p = beacon.tcp_port
 
         # Track contact with Master for failsafe
         if sender_role == "master":
@@ -238,9 +191,9 @@ class C2NodeDaemon:
         peer.ip = sender_ip
         peer.http_port = http_p
         peer.tcp_port = tcp_p
-        peer.state = msg.get("state", "SAFE")
-        peer.uptime_sec = round(now - msg.get("start_time", now), 1)
-        peer.cpu_load = msg.get("cpu_load", 0.0)
+        peer.state = beacon.state
+        peer.uptime_sec = round(now - beacon.start_time, 1)
+        peer.cpu_load = beacon.cpu_load
         peer.packets_received += 1
 
         # Calculate Jitter (RFC 3550 style) and Packet Loss
@@ -268,7 +221,7 @@ class C2NodeDaemon:
 
         peer.last_seq = seq
 
-    async def beacon_sender_loop(self, transport):
+    async def beacon_sender_loop(self, transport: asyncio.DatagramTransport) -> None:
         """Broadcasts presence and status periodically."""
         broadcast_addr = ("<broadcast>", self.udp_port)
         while self.running:
@@ -310,8 +263,8 @@ class C2NodeDaemon:
             await asyncio.sleep(config.beacon_interval_sec)
 
     # --- Fail-Safe Watchdog (Worker Only) ---
-    async def failsafe_watchdog_loop(self):
-        """Monitors contact with C2 Master. Sets state to SAFE if connection drops."""
+    async def failsafe_watchdog_loop(self) -> None:
+        """Monitors contact with C2 Master. Sets state to FAILSAFE_ACTIVE if connection drops."""
         while self.running:
             await asyncio.sleep(1.0)
             if self.role == "worker" and self.master_ip:
@@ -323,31 +276,39 @@ class C2NodeDaemon:
                     self.state = "FAILSAFE_ACTIVE"
 
     # --- TCP Command Engine ---
-    async def handle_tcp_command_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def handle_tcp_command_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         client_addr = writer.get_extra_info("peername")
+        res: Dict[str, Any]
         try:
             line = await reader.readline()
             if not line:
                 return
-            req = json.loads(line.decode("utf-8"))
-            cmd = req.get("command", "")
-            target = req.get("target_id", "all")
-            args = req.get("args", {})
-
-            if target in (self.node_id, "all"):
-                res = self.process_c2_action(cmd, args)
+            cmd_req = parse_tcp_command_frame(line)
+            if cmd_req.target_id in (self.node_id, "all"):
+                res = self.process_c2_action(cmd_req.command, cmd_req.args)
             else:
-                res = {"status": "IGNORED", "reason": f"Target mismatch ({target})"}
-
-            writer.write((json.dumps(res) + "\n").encode("utf-8"))
-            await writer.drain()
+                res = {"status": "IGNORED", "reason": f"Target mismatch ({cmd_req.target_id})"}
+        except C2ParseError as e:
+            logger.warning(f"Rejected invalid TCP command frame from {client_addr}: {e}")
+            res = {"status": "ERROR", "error": f"Invalid command payload: {e.message}"}
         except Exception as e:
             logger.error(f"TCP command execution error from {client_addr}: {e}")
+            res = {"status": "ERROR", "error": f"Internal error: {e}"}
         finally:
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.write((json.dumps(res) + "\n").encode("utf-8"))
+                await writer.drain()
+            except Exception:
+                pass
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
-    def process_c2_action(self, cmd: str, args: dict) -> dict:
+    def process_c2_action(self, cmd: str, args: Dict[str, Any]) -> Dict[str, Any]:
         cmd = cmd.upper()
         logger.info(f"[C2 EXEC] Command '{cmd}' received with args: {args}")
         if cmd == "PING":
@@ -375,227 +336,129 @@ class C2NodeDaemon:
         else:
             return {"status": "NACK", "reason": f"Unknown command '{cmd}'"}
 
-    # --- HTTP & WebSocket Unified Server ---
-    async def handle_http_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    # --- HTTP & WebSocket Server (aiohttp) ---
+    def _create_web_app(self) -> web.Application:
+        app = web.Application()
+        app.router.add_get("/api/status", self.handle_http_status)
+        app.router.add_post("/api/command", self.handle_http_command)
+        app.router.add_post("/api/benchmark", self.handle_http_benchmark)
+        app.router.add_get("/ws", self.handle_ws_session)
+        app.router.add_route("OPTIONS", "/{tail:.*}", self.handle_http_options)
+
+        # Serve static dashboard on Master
+        app.router.add_get("/", self.handle_http_index)
+        app.router.add_get("/index.html", self.handle_http_index)
+        return app
+
+    async def handle_http_options(self, request: web.Request) -> web.Response:
+        return web.Response(status=204, headers=self._cors_headers())
+
+    async def handle_http_status(self, request: web.Request) -> web.Response:
+        data = {
+            "node_id": self.node_id,
+            "role": self.role,
+            "state": self.state,
+            "uptime_sec": round(time.time() - self.start_time, 1),
+            "ip": self.local_ip,
+            "http_port": self.http_port,
+            "tcp_port": self.tcp_port,
+            "peers": {pid: asdict(p) for pid, p in self.peers.items()},
+        }
+        return web.json_response(data, headers=self._cors_headers())
+
+    async def handle_http_command(self, request: web.Request) -> web.Response:
         try:
-            # Read request line
-            req_line = await reader.readline()
-            if not req_line:
-                writer.close()
-                return
-
-            req_line_str = req_line.decode("utf-8", errors="ignore").strip()
-            parts = req_line_str.split(" ")
-            if len(parts) < 2:
-                writer.close()
-                return
-
-            method, path = parts[0].upper(), parts[1]
-
-            # Read headers
-            headers = {}
-            while True:
-                line = await reader.readline()
-                if not line or line == b"\r\n" or line == b"\n":
-                    break
-                header_str = line.decode("utf-8", errors="ignore").strip()
-                if ":" in header_str:
-                    k, v = header_str.split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
-
-            # Check for WebSocket Upgrade
-            if headers.get("upgrade", "").lower() == "websocket":
-                sec_key = headers.get("sec-websocket-key")
-                if sec_key:
-                    accept_key = compute_ws_accept(sec_key)
-                    upgrade_response = (
-                        "HTTP/1.1 101 Switching Protocols\r\n"
-                        "Upgrade: websocket\r\n"
-                        "Connection: Upgrade\r\n"
-                        f"Sec-WebSocket-Accept: {accept_key}\r\n"
-                        "\r\n"
-                    )
-                    writer.write(upgrade_response.encode("utf-8"))
-                    await writer.drain()
-                    await self.handle_ws_session(reader, writer)
-                    return
-
-            # Read Body if Content-Length specified
-            body_bytes = b""
-            content_length = int(headers.get("content-length", 0))
-            if content_length > 0:
-                body_bytes = await reader.readexactly(content_length)
-
-            # Handle HTTP API and Static Content
-            await self.route_http_request(method, path, headers, body_bytes, writer)
-
+            body = await request.read()
+            cmd_req = parse_http_command_payload(body)
+            res = self.process_c2_action(cmd_req.command, cmd_req.args)
+            return web.json_response(res, headers=self._cors_headers())
+        except C2ParseError as e:
+            return web.json_response(
+                {"status": "ERROR", "error": e.message, "field": e.field},
+                status=400,
+                headers=self._cors_headers(),
+            )
         except Exception as e:
-            logger.debug(f"HTTP connection handler exception: {e}")
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-    async def route_http_request(
-        self, method: str, path: str, headers: dict, body: bytes, writer: asyncio.StreamWriter
-    ):
-        cors_headers = (
-            "Access-Control-Allow-Origin: *\r\n"
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-            "Access-Control-Allow-Headers: Content-Type\r\n"
-        )
-
-        if method == "OPTIONS":
-            resp = f"HTTP/1.1 204 No Content\r\n{cors_headers}\r\n"
-            writer.write(resp.encode("utf-8"))
-            await writer.drain()
-            return
-
-        # 1. API: Node Status & Registry
-        if path == "/api/status" and method == "GET":
-            data = {
-                "node_id": self.node_id,
-                "role": self.role,
-                "state": self.state,
-                "uptime_sec": round(time.time() - self.start_time, 1),
-                "ip": self.local_ip,
-                "http_port": self.http_port,
-                "tcp_port": self.tcp_port,
-                "peers": {pid: asdict(p) for pid, p in self.peers.items()},
-            }
-            body_resp = json.dumps(data, indent=2).encode("utf-8")
-            resp = (
-                f"HTTP/1.1 200 OK\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(body_resp)}\r\n"
-                f"{cors_headers}\r\n"
+            return web.json_response(
+                {"status": "ERROR", "error": str(e)},
+                status=500,
+                headers=self._cors_headers(),
             )
-            writer.write(resp.encode("utf-8") + body_resp)
-            await writer.drain()
-            return
 
-        # 2. API: C2 Command Execution via HTTP POST
-        if path == "/api/command" and method == "POST":
-            try:
-                req_json = json.loads(body.decode("utf-8"))
-                cmd = req_json.get("command", "")
-                args = req_json.get("args", {})
-                res = self.process_c2_action(cmd, args)
-            except Exception as e:
-                res = {"status": "ERROR", "error": str(e)}
-
-            body_resp = json.dumps(res).encode("utf-8")
-            resp = (
-                f"HTTP/1.1 200 OK\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(body_resp)}\r\n"
-                f"{cors_headers}\r\n"
-            )
-            writer.write(resp.encode("utf-8") + body_resp)
-            await writer.drain()
-            return
-
-        # 3. API: HTTP Data Transfer Benchmark
-        if path == "/api/benchmark" and method == "POST":
-            recv_time = time.time()
-            size_received = len(body)
-            try:
-                payload_json = json.loads(body.decode("utf-8"))
-                client_send_ts = payload_json.get("client_timestamp", recv_time)
-                preset_label = payload_json.get("preset", "Custom")
-            except Exception:
-                client_send_ts = recv_time
-                preset_label = "Binary/Raw"
-
+    async def handle_http_benchmark(self, request: web.Request) -> web.Response:
+        recv_time = time.time()
+        try:
+            body = await request.read()
+            bench_req = parse_http_benchmark_payload(body)
             duration_server = time.time() - recv_time
             response_payload = {
                 "status": "BENCHMARK_COMPLETE",
                 "node_id": self.node_id,
-                "bytes_received": size_received,
-                "preset": preset_label,
+                "bytes_received": len(body),
+                "preset": bench_req.preset,
                 "server_receive_ts": recv_time,
                 "server_proc_time_ms": round(duration_server * 1000.0, 3),
-                "client_latency_estimate_ms": round((recv_time - client_send_ts) * 1000.0, 2),
+                "client_latency_estimate_ms": round((recv_time - bench_req.client_timestamp) * 1000.0, 2),
             }
-
-            body_resp = json.dumps(response_payload).encode("utf-8")
-            resp = (
-                f"HTTP/1.1 200 OK\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(body_resp)}\r\n"
-                f"{cors_headers}\r\n"
+            return web.json_response(response_payload, headers=self._cors_headers())
+        except C2ParseError as e:
+            return web.json_response(
+                {"status": "ERROR", "error": e.message, "field": e.field},
+                status=400,
+                headers=self._cors_headers(),
             )
-            writer.write(resp.encode("utf-8") + body_resp)
-            await writer.drain()
-            return
+        except Exception as e:
+            return web.json_response(
+                {"status": "ERROR", "error": str(e)},
+                status=500,
+                headers=self._cors_headers(),
+            )
 
-        # 4. Static UI: Serve web/index.html on C2 Master
-        if self.role == "master" and (path in ("/", "/index.html")):
+    async def handle_http_index(self, request: web.Request) -> web.StreamResponse:
+        if self.role == "master":
             html_file = self.web_dir / "index.html"
             if html_file.exists():
-                with open(html_file, "rb") as f:
-                    content = f.read()
-                resp = (
-                    f"HTTP/1.1 200 OK\r\n"
-                    f"Content-Type: text/html; charset=utf-8\r\n"
-                    f"Content-Length: {len(content)}\r\n"
-                    f"{cors_headers}\r\n"
-                )
-                writer.write(resp.encode("utf-8") + content)
-                await writer.drain()
-                return
+                return web.FileResponse(html_file, headers=self._cors_headers())
+        raise web.HTTPNotFound(headers=self._cors_headers())
 
-        # 404 Fallback
-        not_found = b"404 Not Found"
-        resp = f"HTTP/1.1 404 Not Found\r\nContent-Length: {len(not_found)}\r\n{cors_headers}\r\n"
-        writer.write(resp.encode("utf-8") + not_found)
-        await writer.drain()
-
-    # --- WebSocket Streaming Engine ---
-    async def handle_ws_session(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Maintains live WebSocket connection for streaming telemetry and benchmark bursts."""
-        self.ws_clients.add(writer)
+    async def handle_ws_session(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        self.ws_clients.add(ws)
         logger.info(f"WebSocket client connected. Active connections: {len(self.ws_clients)}")
 
         try:
-            while self.running:
-                frame = await read_ws_frame(reader)
-                if not frame:
-                    break
-                opcode, payload_str = frame
-                if opcode == 0x8:  # Close
-                    break
-                elif opcode == 0x9:  # Ping
-                    writer.write(encode_ws_frame("", opcode=0xA))  # Pong
-                    await writer.drain()
-                elif opcode == 0x1:  # Text frame from client (e.g. benchmark burst request)
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
                     try:
-                        msg = json.loads(payload_str)
-                        action = msg.get("action")
-                        if action == "ws_benchmark":
-                            # Echo benchmark payload with server timestamp
-                            client_ts = msg.get("timestamp", time.time())
+                        ws_req = parse_ws_message(msg.data)
+                        if ws_req.action == "ws_benchmark":
+                            client_ts = ws_req.timestamp if ws_req.timestamp > 0 else time.time()
                             resp_data = {
                                 "type": "ws_benchmark_ack",
                                 "node_id": self.node_id,
-                                "bytes": len(payload_str),
+                                "bytes": len(msg.data),
                                 "client_timestamp": client_ts,
                                 "server_timestamp": time.time(),
                             }
-                            writer.write(encode_ws_frame(json.dumps(resp_data)))
-                            await writer.drain()
-                    except Exception as e:
+                            await ws.send_json(resp_data)
+                    except C2ParseError as e:
                         logger.debug(f"WS message parse error: {e}")
-
-        except Exception as e:
-            logger.debug(f"WebSocket session closed with error: {e}")
+                        await ws.send_json({"type": "error", "message": e.message})
+                    except Exception as e:
+                        logger.debug(f"WS message unexpected error: {e}")
+                elif msg.type == WSMsgType.BINARY:
+                    logger.debug(f"Ignoring unexpected binary WS frame ({len(msg.data)} bytes)")
+                elif msg.type == WSMsgType.ERROR:
+                    logger.debug(f"WebSocket connection error: {ws.exception()}")
+                    break
         finally:
-            self.ws_clients.discard(writer)
+            self.ws_clients.discard(ws)
             logger.info(f"WebSocket client disconnected. Remaining: {len(self.ws_clients)}")
 
-    async def ws_telemetry_broadcast_loop(self):
+        return ws
+
+    async def ws_telemetry_broadcast_loop(self) -> None:
         """Streams real-time telemetry frames to all connected WebSockets (2 Hz)."""
         while self.running:
             await asyncio.sleep(0.5)
@@ -611,21 +474,22 @@ class C2NodeDaemon:
                 "local_ip": self.local_ip,
                 "peers": {pid: asdict(p) for pid, p in self.peers.items()},
             }
-            frame = encode_ws_frame(json.dumps(telemetry_snapshot))
 
-            dead_clients = set()
-            for client in list(self.ws_clients):
+            dead_clients: Set[web.WebSocketResponse] = set()
+            for ws in list(self.ws_clients):
+                if ws.closed:
+                    dead_clients.add(ws)
+                    continue
                 try:
-                    client.write(frame)
-                    await client.drain()
+                    await ws.send_json(telemetry_snapshot)
                 except Exception:
-                    dead_clients.add(client)
+                    dead_clients.add(ws)
 
             for d in dead_clients:
                 self.ws_clients.discard(d)
 
     # --- Start Lifecycle ---
-    async def start(self):
+    async def start(self) -> None:
         self.running = True
         loop = asyncio.get_running_loop()
 
@@ -650,10 +514,11 @@ class C2NodeDaemon:
             self.handle_tcp_command_client, "0.0.0.0", self.tcp_port
         )
 
-        # 3. HTTP & WebSocket Server
-        http_server = await asyncio.start_server(
-            self.handle_http_connection, "0.0.0.0", self.http_port
-        )
+        # 3. HTTP & WebSocket Server (aiohttp)
+        self.app_runner = web.AppRunner(self.app, access_log=None)
+        await self.app_runner.setup()
+        site = web.TCPSite(self.app_runner, "0.0.0.0", self.http_port)
+        await site.start()
 
         logger.info("=" * 70)
         logger.info(f" C2 WIRELESS NODE ONLINE: [{self.node_id}] (Role: {self.role.upper()})")
@@ -670,7 +535,6 @@ class C2NodeDaemon:
             asyncio.create_task(self.failsafe_watchdog_loop()),
             asyncio.create_task(self.ws_telemetry_broadcast_loop()),
             asyncio.create_task(tcp_server.serve_forever()),
-            asyncio.create_task(http_server.serve_forever()),
         ]
 
         try:
@@ -678,15 +542,19 @@ class C2NodeDaemon:
         except asyncio.CancelledError:
             pass
         finally:
+            self.running = False
             transport.close()
             tcp_server.close()
-            http_server.close()
+            for ws in list(self.ws_clients):
+                await ws.close(code=WSCloseCode.GOING_AWAY, message=b"Server shutdown")
+            if self.app_runner:
+                await self.app_runner.cleanup()
 
 
 # ---------------------------------------------------------------------------
 # CLI Entry Point
 # ---------------------------------------------------------------------------
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Universal C2 Wireless Network Node Daemon")
     parser.add_argument(
         "--id",
