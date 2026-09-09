@@ -105,17 +105,16 @@ Within 1 second, every active node will automatically appear on the C2 Master's 
 ## 3. Web Dashboard Features
 
 1. **Active Node Cards:**
-   * Displays real-time RTT (ms), wireless jitter, packet loss percentage, CPU load, and system state (`SAFE`, `ARMED`, `ESTOP`).
-   * Individual buttons to `Ping`, `Arm`, `Safe`, or `E-Stop` any specific node.
+   * Displays real-time RTT (ms), wireless jitter, packet loss percentage, CPU load, and uptime.
+   * Direct `Ping` button for any specific node.
 2. **Global Controls:**
-   * `ARM ALL`: Transitions all connected nodes to `ARMED`.
-   * `SAFE ALL`: Returns all nodes to `SAFE`.
-   * `EMERGENCY STOP`: Broadcasts immediate emergency halt.
+   * `PING ALL`: Dispatches a concurrent ping to all discovered nodes.
 3. **Data Transfer Lab (HTTP & WebSocket Benchmarking):**
    * Select any target node from the dropdown.
    * Choose between **HTTP POST (JSON)** and **WebSocket Stream**.
-   * Pick payload sizes: **1 KB**, **16 KB**, **64 KB**, or **256 KB**.
+   * Pick payload sizes (**1 KB**, **16 KB**, **64 KB**, **256 KB**) or type custom payload messages in the textarea with live byte counting.
    * Click **Run Benchmark Transfer** to measure real-time transfer latency (ms), throughput (KB/s and MB/s), and view the returned JSON echo.
+   * The receiving worker node prints a formatted ANSI banner to its terminal CLI showing sender IP, timestamp, latency, and payload content.
 4. **Live Activity Log:**
    * Displays timestamped network events, command acknowledgments, and connection alerts.
 
@@ -129,15 +128,15 @@ You can also interact directly with any worker node via standard HTTP commands:
 # Query node health and status:
 curl http://<NODE_IP>:8080/api/status
 
-# Send an ARM command to node-1:
+# Send a PING command to node-1:
 curl -X POST http://<NODE_IP>:8080/api/command \
   -H "Content-Type: application/json" \
-  -d '{"command": "ARM", "target_id": "node-1"}'
+  -d '{"command": "PING", "target_id": "node-1"}'
 
-# Execute an HTTP data transfer test:
+# Execute an HTTP data transfer test with custom message:
 curl -X POST http://<NODE_IP>:8080/api/benchmark \
   -H "Content-Type: application/json" \
-  -d '{"preset": "TestPayload", "data": "Sample benchmark content..."}'
+  -d '{"preset": "Custom", "data": "Sample benchmark content..."}'
 ```
 
 *(Replace `<NODE_IP>` with the actual IP address of the target worker node, e.g., `192.168.1.20`)*
