@@ -72,6 +72,7 @@ Connect PC0 to the router or network switch via Gigabit Ethernet cable (recommen
 ```bash
 cd c2-wireless-poc
 chmod +x scripts/*.sh
+./scripts/setup.sh   # Installs dependencies (or: sudo apt install -y python3-aiohttp)
 ./scripts/run_master.sh c2-master 9000
 ```
 
@@ -85,7 +86,8 @@ chmod +x scripts/*.sh
 Connect each remote device (PC, laptop, SBC, or companion computer) to the wireless network (e.g., `C2-NET-5G`):
 
 ```bash
-# On Node 1
+# On Node 1 (Run ./scripts/setup.sh first on a fresh machine):
+./scripts/setup.sh
 ./scripts/run_worker.sh node-1
 
 # On Node n
