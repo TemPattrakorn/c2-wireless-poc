@@ -371,6 +371,9 @@ class C2NodeDaemon:
         # Serve static dashboard on Master
         app.router.add_get("/", self.handle_http_index)
         app.router.add_get("/index.html", self.handle_http_index)
+        if self.role == "master" and self.web_dir.exists():
+            app.router.add_static("/static", self.web_dir)
+            app.router.add_get("/alpine.min.js", self.handle_http_alpine)
         return app
 
     async def handle_http_options(self, request: web.Request) -> web.Response:
@@ -450,6 +453,13 @@ class C2NodeDaemon:
             html_file = self.web_dir / "index.html"
             if html_file.exists():
                 return web.FileResponse(html_file, headers=self._cors_headers())
+        raise web.HTTPNotFound(headers=self._cors_headers())
+
+    async def handle_http_alpine(self, request: web.Request) -> web.StreamResponse:
+        if self.role == "master":
+            alpine_file = self.web_dir / "alpine.min.js"
+            if alpine_file.exists():
+                return web.FileResponse(alpine_file, headers=self._cors_headers())
         raise web.HTTPNotFound(headers=self._cors_headers())
 
     async def handle_ws_session(self, request: web.Request) -> web.WebSocketResponse:

@@ -172,10 +172,21 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(resp, web.FileResponse)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
 
+    async def test_master_serves_alpine_js(self) -> None:
+        req = make_mocked_request("GET", "/alpine.min.js", app=self.master_daemon.app)
+        resp = await self.master_daemon.handle_http_alpine(req)
+        self.assertIsInstance(resp, web.FileResponse)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+
     async def test_worker_index_raises_404(self) -> None:
         req = make_mocked_request("GET", "/", app=self.worker_daemon.app)
         with self.assertRaises(web.HTTPNotFound):
             await self.worker_daemon.handle_http_index(req)
+
+    async def test_worker_alpine_raises_404(self) -> None:
+        req = make_mocked_request("GET", "/alpine.min.js", app=self.worker_daemon.app)
+        with self.assertRaises(web.HTTPNotFound):
+            await self.worker_daemon.handle_http_alpine(req)
 
 
 class TestBenchmarkPayloadDisplay(unittest.TestCase):

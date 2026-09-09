@@ -33,6 +33,8 @@
       padding: 1.5rem;
     }
 
+    [x-cloak] { display: none !important; }
+
     .container { max-width: 1400px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
 
     /* Header Bar */
@@ -59,6 +61,7 @@
       font-weight: 600;
     }
     .badge-live { background: var(--success-bg); color: var(--success); }
+    .badge-offline { background: var(--warning-bg); color: var(--warning); }
     .badge-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 
     /* Global Actions */
@@ -264,8 +267,11 @@
     .log-time { color: var(--text-muted); }
     .log-msg { color: var(--text-main); }
   </style>
+
+  <!-- Offline-vendored Alpine.js with fallback to static / CDN -->
+  <script defer src="/static/alpine.min.js"></script>
 </head>
-<body>
+<body x-data="c2Dashboard()" x-cloak>
   <div class="container">
     <!-- Header -->
     <header class="header-bar">
@@ -274,12 +280,12 @@
         <div class="subtitle">Distributed Proof-of-Concept Testbed | Wireless Network Backbone</div>
       </div>
       <div class="header-meta">
-        <div class="badge badge-live">
+        <div class="badge" :class="wsStatus.includes('Online') ? 'badge-live' : 'badge-offline'">
           <span class="badge-dot"></span>
-          <span id="wsStatus">Connecting...</span>
+          <span x-text="wsStatus"></span>
         </div>
         <div class="global-actions">
-          <button class="btn-primary" onclick="broadcastCommand('PING')">PING ALL</button>
+          <button class="btn-primary" @click="broadcastCommand('PING')">PING ALL</button>
         </div>
       </div>
     </header>
@@ -291,13 +297,44 @@
         <!-- Active Nodes Grid -->
         <div class="card">
           <div class="card-header">
-            <h2>Active Wireless Nodes (<span id="nodeCount">0</span>)</h2>
-            <button class="btn-outline" onclick="fetchNodeStatus()">Refresh</button>
+            <h2>Active Wireless Nodes (<span x-text="peerList.length">0</span>)</h2>
+            <button class="btn-outline" @click="fetchNodeStatus(true)">Refresh</button>
           </div>
-          <div class="nodes-grid" id="nodesGrid">
-            <div style="color: var(--text-muted); font-size: 0.875rem; padding: 1rem;">
+          <div class="nodes-grid">
+            <div x-show="peerList.length === 0" style="color: var(--text-muted); font-size: 0.875rem; padding: 1rem;">
               Listening for node beacons over UDP 9876...
             </div>
+            <template x-for="node in peerList" :key="node.id">
+              <div class="node-card">
+                <div class="node-card-top">
+                  <div>
+                    <div class="node-id" x-text="node.node_id"></div>
+                    <div class="node-ip" x-text="`${node.ip}:${node.http_port} (${node.role})`"></div>
+                  </div>
+                </div>
+                <table class="metrics-table">
+                  <tr>
+                    <td>Round-Trip Time</td>
+                    <td :style="node.rtt_ms < 20 ? 'color: var(--success)' : 'color: var(--warning)'" x-text="`${node.rtt_ms} ms`"></td>
+                  </tr>
+                  <tr>
+                    <td>Wireless Jitter</td>
+                    <td x-text="`${node.jitter_ms} ms`"></td>
+                  </tr>
+                  <tr>
+                    <td>Packet Loss</td>
+                    <td :style="node.packet_loss_pct > 0 ? 'color: var(--danger)' : 'color: var(--text-main)'" x-text="`${node.packet_loss_pct}%`"></td>
+                  </tr>
+                  <tr>
+                    <td>CPU Load / Uptime</td>
+                    <td x-text="`${node.cpu_load} / ${Math.round(node.uptime_sec)}s`"></td>
+                  </tr>
+                </table>
+                <div class="node-actions">
+                  <button class="btn-outline" @click="sendNodeCommand(node.id, 'PING')">Ping</button>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -305,9 +342,16 @@
         <div class="card">
           <div class="card-header">
             <h2>Activity & Network Log</h2>
-            <button class="btn-outline" onclick="clearLog()">Clear</button>
+            <button class="btn-outline" @click="logs = []">Clear</button>
           </div>
-          <div class="log-feed" id="logFeed"></div>
+          <div class="log-feed" x-ref="logFeed">
+            <template x-for="log in logs" :key="log.id">
+              <div class="log-line">
+                <span class="log-time" x-text="`[${log.time}]`"></span>
+                <span class="log-msg" x-text="log.msg"></span>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -319,424 +363,377 @@
         
         <div class="form-group">
           <label for="targetNode">Target Node</label>
-          <select id="targetNode">
+          <select id="targetNode" x-model="selectedTarget">
             <option value="">Select target node...</option>
+            <template x-for="node in peerList" :key="node.id">
+              <option :value="node.id" x-text="`${node.id} (${node.ip}:${node.http_port})`"></option>
+            </template>
           </select>
         </div>
 
         <div class="form-group">
           <label>Transfer Protocol</label>
           <div class="button-group">
-            <button id="protoHttp" class="active" onclick="selectProtocol('HTTP')">HTTP POST (JSON)</button>
-            <button id="protoWs" onclick="selectProtocol('WS')">WebSocket Stream</button>
+            <button :class="selectedProtocol === 'HTTP' ? 'active' : ''" @click="selectProtocol('HTTP')">HTTP POST (JSON)</button>
+            <button :class="selectedProtocol === 'WS' ? 'active' : ''" @click="selectProtocol('WS')">WebSocket Stream</button>
           </div>
         </div>
 
         <div class="form-group">
           <label>Payload Size Preset</label>
           <div class="button-group">
-            <button class="size-btn active" onclick="selectPayloadSize('1KB', 1024, this)">1 KB</button>
-            <button class="size-btn" onclick="selectPayloadSize('16KB', 16384, this)">16 KB</button>
-            <button class="size-btn" onclick="selectPayloadSize('64KB', 65536, this)">64 KB</button>
-            <button class="size-btn" onclick="selectPayloadSize('256KB', 262144, this)">256 KB</button>
+            <button :class="selectedSizeLabel === '1KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('1KB', 1024)">1 KB</button>
+            <button :class="selectedSizeLabel === '16KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('16KB', 16384)">16 KB</button>
+            <button :class="selectedSizeLabel === '64KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('64KB', 65536)">64 KB</button>
+            <button :class="selectedSizeLabel === '256KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('256KB', 262144)">256 KB</button>
           </div>
         </div>
 
         <div class="form-group">
           <div style="display: flex; justify-content: space-between; align-items: baseline;">
             <label for="benchCustomPayload">Payload Content</label>
-            <span class="byte-counter" id="benchByteCount">0 bytes</span>
+            <span class="byte-counter" x-text="byteCountText"></span>
           </div>
-          <textarea id="benchCustomPayload" rows="4" placeholder="Enter or paste custom payload data here..."></textarea>
+          <textarea id="benchCustomPayload" rows="4" x-model="payloadText" @input="selectedSizeLabel = 'Custom'" placeholder="Enter or paste custom payload data here..."></textarea>
         </div>
 
-        <button class="btn-primary" style="justify-content: center; padding: 0.65rem;" onclick="runDataTransferBenchmark()">
+        <button class="btn-primary" style="justify-content: center; padding: 0.65rem;" @click="runDataTransferBenchmark()">
           Run Benchmark Transfer
         </button>
 
         <!-- Benchmark Results Display -->
-        <div class="benchmark-result" id="benchResult">
+        <div class="benchmark-result">
           <div class="result-stat">
             <span>Status:</span>
-            <span id="benchStatus">Ready</span>
+            <span :style="{ color: bench.statusColor }" x-text="bench.status"></span>
           </div>
           <div class="result-stat">
             <span>Round-Trip Latency:</span>
-            <span id="benchRtt">-</span>
+            <span x-text="bench.rtt"></span>
           </div>
           <div class="result-stat">
             <span>Transfer Throughput:</span>
-            <span id="benchThroughput">-</span>
+            <span x-text="bench.throughput"></span>
           </div>
           <div class="result-stat">
             <span>Bytes Transferred:</span>
-            <span id="benchBytes">-</span>
+            <span x-text="bench.bytes"></span>
           </div>
         </div>
 
         <div class="form-group">
           <label>Echo Response Payload</label>
-          <pre class="payload-preview" id="payloadPreview">No transfer executed yet.</pre>
+          <pre class="payload-preview" x-text="bench.preview"></pre>
         </div>
       </div>
     </div>
   </div>
 
   <script>
-    // State & Config
-    let selectedProtocol = 'HTTP';
-    let selectedSizeLabel = '1KB';
-    let selectedSizeBytes = 1024;
-    let peersCache = {};
-    let ws = null;
+    function c2Dashboard() {
+      return {
+        // State
+        wsStatus: 'Connecting...',
+        peers: {},
+        logs: [],
+        logCounter: 0,
+        selectedTarget: '',
+        selectedProtocol: 'HTTP',
+        selectedSizeLabel: '1KB',
+        selectedSizeBytes: 1024,
+        payloadText: '',
+        ws: null,
+        bench: {
+          status: 'Ready',
+          statusColor: 'inherit',
+          rtt: '-',
+          throughput: '-',
+          bytes: '-',
+          preview: 'No transfer executed yet.'
+        },
 
-    // Synthetic JSON benchmark payload generator
-    function generateSyntheticData(targetBytes) {
-      const nowTs = Date.now();
-      const baseObj = {
-        benchmark_id: `bench-${nowTs.toString(36)}`,
-        preset: selectedSizeLabel,
-        timestamp: nowTs / 1000.0,
-        record_count: 0,
-        records: []
-      };
+        get peerList() {
+          return Object.keys(this.peers).map(id => ({
+            id,
+            ...this.peers[id]
+          }));
+        },
 
-      const sampleStatuses = ["OK", "WARN", "SYNC", "IDLE"];
-      const estimatedRecordSize = targetBytes > 32768 ? 165.5 : 162;
-      const estimatedCount = Math.max(1, Math.floor((targetBytes - 115) / estimatedRecordSize));
-      const nowSec = Math.floor(nowTs / 1000);
+        get byteCountText() {
+          const byteLen = new Blob([this.payloadText || '']).size;
+          return `${byteLen.toLocaleString()} bytes (${(byteLen / 1024).toFixed(1)} KB) [${this.selectedSizeLabel}]`;
+        },
 
-      for (let i = 1; i <= estimatedCount; i++) {
-        baseObj.records.push({
-          id: i,
-          timestamp: nowSec + i,
-          status: sampleStatuses[(i - 1) % sampleStatuses.length],
-          channel: (i % 8) + 1,
-          metric_val: Math.round(((i * 7.3) % 100) * 10) / 10,
-          payload: `chunk_${i}_${(i * 997).toString(16)}`
-        });
-      }
-      baseObj.record_count = baseObj.records.length;
+        init() {
+          this.payloadText = this.generateSyntheticData(this.selectedSizeBytes);
+          this.addLog('System initialized. Connecting to C2 Master WebSocket...');
+          this.connectWebSocket();
+          this.fetchNodeStatus(true);
+          setInterval(() => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+              this.fetchNodeStatus(false);
+            }
+          }, 2000);
+        },
 
-      let result = JSON.stringify(baseObj, null, 2);
-
-      if (result.length < targetBytes && baseObj.records.length > 0) {
-        const diff = targetBytes - result.length;
-        if (diff > 12) {
-          baseObj.records[baseObj.records.length - 1].payload += "_pad_" + "0".repeat(diff - 9);
-          result = JSON.stringify(baseObj, null, 2);
-        }
-      }
-
-      return result;
-    }
-
-    function updateByteCounter(label) {
-      const textarea = document.getElementById('benchCustomPayload');
-      const counter = document.getElementById('benchByteCount');
-      if (!textarea || !counter) return;
-      const byteLen = new Blob([textarea.value]).size;
-      const presetTag = label || selectedSizeLabel;
-      counter.innerText = `${byteLen.toLocaleString()} bytes (${(byteLen / 1024).toFixed(1)} KB) [${presetTag}]`;
-    }
-
-    // Initialize
-    window.addEventListener('DOMContentLoaded', () => {
-      addLog('System initialized. Connecting to C2 Master WebSocket...');
-      connectWebSocket();
-      fetchNodeStatus();
-      setInterval(fetchNodeStatus, 2000);
-
-      const payloadArea = document.getElementById('benchCustomPayload');
-      if (payloadArea) {
-        payloadArea.addEventListener('input', () => {
-          selectedSizeLabel = 'Custom';
-          document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
-          updateByteCounter('Custom');
-        });
-      }
-
-      const defaultBtn = document.querySelector('.size-btn');
-      selectPayloadSize('1KB', 1024, defaultBtn);
-    });
-
-    // Logging
-    function addLog(msg) {
-      const feed = document.getElementById('logFeed');
-      const timeStr = new Date().toLocaleTimeString();
-      const div = document.createElement('div');
-      div.className = 'log-line';
-      div.innerHTML = `<span class="log-time">[${timeStr}]</span><span class="log-msg">${msg}</span>`;
-      feed.appendChild(div);
-      feed.scrollTop = feed.scrollHeight;
-    }
-    function clearLog() {
-      document.getElementById('logFeed').innerHTML = '';
-    }
-
-    // Protocol & Payload Selection
-    function selectProtocol(proto) {
-      selectedProtocol = proto;
-      document.getElementById('protoHttp').className = proto === 'HTTP' ? 'active' : '';
-      document.getElementById('protoWs').className = proto === 'WS' ? 'active' : '';
-      addLog(`Selected transfer protocol: ${proto}`);
-    }
-
-    function selectPayloadSize(label, bytes, btn) {
-      selectedSizeLabel = label;
-      selectedSizeBytes = bytes;
-      document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
-      if (btn) btn.classList.add('active');
-      const textarea = document.getElementById('benchCustomPayload');
-      if (textarea) {
-        textarea.value = generateSyntheticData(bytes);
-        updateByteCounter(label);
-      }
-    }
-
-    // WebSocket Telemetry Connection (Master Live Stream)
-    function connectWebSocket() {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${proto}//${window.location.host}/ws`;
-      ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        document.getElementById('wsStatus').innerText = 'Online (Live Stream)';
-        addLog('Connected to C2 Telemetry WebSocket stream.');
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'telemetry_update') {
-            updateNodesGrid(data.peers);
-          }
-        } catch (e) {
-          console.error('WS parse error:', e);
-        }
-      };
-
-      ws.onclose = () => {
-        document.getElementById('wsStatus').innerText = 'Offline (Reconnecting...)';
-        setTimeout(connectWebSocket, 2500);
-      };
-    }
-
-    // Fetch Status via HTTP REST fallback
-    async function fetchNodeStatus() {
-      try {
-        const resp = await fetch('/api/status');
-        if (resp.ok) {
-          const data = await resp.json();
-          updateNodesGrid(data.peers);
-        }
-      } catch (err) {
-        // Server might be reloading
-      }
-    }
-
-    // Render Node Grid
-    function updateNodesGrid(peers) {
-      if (!peers) return;
-      peersCache = peers;
-      const grid = document.getElementById('nodesGrid');
-      const targetSelect = document.getElementById('targetNode');
-      const nodeKeys = Object.keys(peers);
-      document.getElementById('nodeCount').innerText = nodeKeys.length;
-
-      if (nodeKeys.length === 0) {
-        grid.innerHTML = '<div style="color: var(--text-muted); padding: 1rem;">Waiting for node beacons...</div>';
-        return;
-      }
-
-      // Update Target Dropdown
-      const currentTarget = targetSelect.value;
-      targetSelect.innerHTML = '<option value="">Select target node...</option>';
-      nodeKeys.forEach(id => {
-        const opt = document.createElement('option');
-        opt.value = id;
-        opt.text = `${id} (${peers[id].ip}:${peers[id].http_port})`;
-        if (id === currentTarget) opt.selected = true;
-        targetSelect.appendChild(opt);
-      });
-
-      // Update Cards
-      grid.innerHTML = '';
-      nodeKeys.forEach(id => {
-        const node = peers[id];
-        const card = document.createElement('div');
-        card.className = 'node-card';
-        card.innerHTML = `
-          <div class="node-card-top">
-            <div>
-              <div class="node-id">${node.node_id}</div>
-              <div class="node-ip">${node.ip}:${node.http_port} (${node.role})</div>
-            </div>
-          </div>
-          <table class="metrics-table">
-            <tr><td>Round-Trip Time</td><td style="color: ${node.rtt_ms < 20 ? 'var(--success)' : 'var(--warning)'}">${node.rtt_ms} ms</td></tr>
-            <tr><td>Wireless Jitter</td><td>${node.jitter_ms} ms</td></tr>
-            <tr><td>Packet Loss</td><td style="color: ${node.packet_loss_pct > 0 ? 'var(--danger)' : 'var(--text-main)'}">${node.packet_loss_pct}%</td></tr>
-            <tr><td>CPU Load / Uptime</td><td>${node.cpu_load} / ${Math.round(node.uptime_sec)}s</td></tr>
-          </table>
-          <div class="node-actions">
-            <button class="btn-outline" onclick="sendNodeCommand('${id}', 'PING')">Ping</button>
-          </div>
-        `;
-        grid.appendChild(card);
-      });
-    }
-
-    // Node Commands (HTTP POST)
-    async function sendNodeCommand(nodeId, cmd) {
-      const node = peersCache[nodeId];
-      if (!node) return;
-      addLog(`Sending command [${cmd}] to ${nodeId}...`);
-
-      try {
-        const url = `http://${node.ip}:${node.http_port}/api/command`;
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd, target_id: nodeId })
-        });
-        const resJson = await resp.json();
-        addLog(`[${nodeId}] Response: ${JSON.stringify(resJson)}`);
-        fetchNodeStatus();
-      } catch (err) {
-        addLog(`Error executing command on ${nodeId}: ${err}`);
-      }
-    }
-
-    async function broadcastCommand(cmd) {
-      addLog(`Broadcasting global command: [${cmd}]`);
-      for (const id of Object.keys(peersCache)) {
-        sendNodeCommand(id, cmd);
-      }
-    }
-
-    // Benchmark Execution (HTTP POST vs. WebSocket)
-    async function runDataTransferBenchmark() {
-      const targetId = document.getElementById('targetNode').value;
-      if (!targetId) {
-        alert('Please select a target node from the dropdown.');
-        return;
-      }
-      const node = peersCache[targetId];
-      if (!node) return;
-
-      const payloadArea = document.getElementById('benchCustomPayload');
-      const payloadText = (payloadArea && payloadArea.value) ? payloadArea.value : generateSyntheticData(selectedSizeBytes);
-
-      document.getElementById('benchStatus').innerText = 'Transferring...';
-      document.getElementById('benchStatus').style.color = 'var(--primary)';
-
-      if (selectedProtocol === 'HTTP') {
-        // HTTP POST Data Transfer Test
-        const startTs = performance.now();
-        const clientSendTs = Date.now() / 1000.0;
-        const payload = {
-          preset: selectedSizeLabel,
-          client_timestamp: clientSendTs,
-          data: payloadText
-        };
-
-        try {
-          const url = `http://${node.ip}:${node.http_port}/api/benchmark`;
-          const resp = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+        addLog(msg) {
+          const timeStr = new Date().toLocaleTimeString();
+          this.logs.push({
+            id: ++this.logCounter,
+            time: timeStr,
+            msg: msg
           });
-          const durationMs = performance.now() - startTs;
-          const resJson = await resp.json();
+          this.$nextTick(() => {
+            if (this.$refs.logFeed) {
+              this.$refs.logFeed.scrollTop = this.$refs.logFeed.scrollHeight;
+            }
+          });
+        },
 
-          const totalBytes = new Blob([JSON.stringify(payload)]).size;
-          const throughputKbps = (totalBytes / 1024) / (durationMs / 1000);
+        selectProtocol(proto) {
+          this.selectedProtocol = proto;
+          this.addLog(`Selected transfer protocol: ${proto}`);
+        },
 
-          document.getElementById('benchStatus').innerText = 'HTTP Success';
-          document.getElementById('benchStatus').style.color = 'var(--success)';
-          document.getElementById('benchRtt').innerText = `${durationMs.toFixed(1)} ms`;
-          document.getElementById('benchThroughput').innerText = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
-          document.getElementById('benchBytes').innerText = `${(totalBytes/1024).toFixed(1)} KB`;
-          document.getElementById('payloadPreview').innerText = JSON.stringify(resJson, null, 2);
+        selectPayloadSize(label, bytes) {
+          this.selectedSizeLabel = label;
+          this.selectedSizeBytes = bytes;
+          this.payloadText = this.generateSyntheticData(bytes);
+        },
 
-          addLog(`HTTP Benchmark to ${targetId}: ${totalBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
-        } catch (err) {
-          document.getElementById('benchStatus').innerText = 'HTTP Failed';
-          document.getElementById('benchStatus').style.color = 'var(--danger)';
-          addLog(`HTTP Benchmark error: ${err}`);
-        }
-      } else {
-        // Direct WebSocket Streaming Data Transfer Test
-        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const targetWsUrl = `${wsProto}//${node.ip}:${node.http_port}/ws`;
-        addLog(`Connecting direct WebSocket to ${targetId} (${targetWsUrl})...`);
+        connectWebSocket() {
+          const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const wsUrl = `${proto}//${window.location.host}/ws`;
+          this.ws = new WebSocket(wsUrl);
 
-        let benchWs;
-        try {
-          benchWs = new WebSocket(targetWsUrl);
-        } catch (e) {
-          document.getElementById('benchStatus').innerText = 'WS Error';
-          document.getElementById('benchStatus').style.color = 'var(--danger)';
-          addLog(`Failed to connect WebSocket to ${targetId}: ${e}`);
-          return;
-        }
-
-        const wsTimeout = setTimeout(() => {
-          if (benchWs.readyState !== WebSocket.CLOSED) {
-            benchWs.close();
-            document.getElementById('benchStatus').innerText = 'WS Timeout';
-            document.getElementById('benchStatus').style.color = 'var(--danger)';
-            addLog(`WebSocket benchmark to ${targetId} timed out (> 10s).`);
-          }
-        }, 10000);
-
-        benchWs.onopen = () => {
-          const wsStartTime = performance.now();
-          const payload = {
-            action: 'ws_benchmark',
-            target_id: targetId,
-            preset: selectedSizeLabel,
-            timestamp: Date.now() / 1000.0,
-            data: payloadText
+          this.ws.onopen = () => {
+            this.wsStatus = 'Online (Live Stream)';
+            this.addLog('Connected to C2 Telemetry WebSocket stream.');
           };
-          const rawStr = JSON.stringify(payload);
-          const rawBytes = new Blob([rawStr]).size;
 
-          benchWs.onmessage = (event) => {
+          this.ws.onmessage = (event) => {
             try {
               const data = JSON.parse(event.data);
-              if (data.type === 'ws_benchmark_ack') {
-                clearTimeout(wsTimeout);
-                const durationMs = performance.now() - wsStartTime;
-                const throughputKbps = (rawBytes / 1024) / (durationMs / 1000);
-
-                document.getElementById('benchStatus').innerText = 'WebSocket Success';
-                document.getElementById('benchStatus').style.color = 'var(--success)';
-                document.getElementById('benchRtt').innerText = `${durationMs.toFixed(1)} ms`;
-                document.getElementById('benchThroughput').innerText = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
-                document.getElementById('benchBytes').innerText = `${(rawBytes/1024).toFixed(1)} KB`;
-                document.getElementById('payloadPreview').innerText = JSON.stringify(data, null, 2);
-
-                addLog(`WebSocket Benchmark to ${targetId}: ${rawBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
-                benchWs.close();
+              if (data.type === 'telemetry_update' && data.peers) {
+                this.peers = data.peers;
+                if (this.selectedTarget && !this.peers[this.selectedTarget]) {
+                  this.selectedTarget = '';
+                }
               }
             } catch (e) {
-              console.error('Benchmark WS parse error:', e);
+              console.error('WS parse error:', e);
             }
           };
 
-          benchWs.send(rawStr);
-        };
+          this.ws.onclose = () => {
+            this.wsStatus = 'Offline (Reconnecting...)';
+            setTimeout(() => this.connectWebSocket(), 2500);
+          };
+        },
 
-        benchWs.onerror = (err) => {
-          clearTimeout(wsTimeout);
-          document.getElementById('benchStatus').innerText = 'WebSocket Failed';
-          document.getElementById('benchStatus').style.color = 'var(--danger)';
-          addLog(`WebSocket Benchmark error on ${targetId}`);
-        };
-      }
+        async fetchNodeStatus(force = false) {
+          if (!force && this.ws && this.ws.readyState === WebSocket.OPEN) {
+            return;
+          }
+          try {
+            const resp = await fetch('/api/status');
+            if (resp.ok) {
+              const data = await resp.json();
+              if (data.peers) {
+                this.peers = data.peers;
+              }
+            }
+          } catch (err) {
+            // Server might be reloading
+          }
+        },
+
+        async sendNodeCommand(nodeId, cmd) {
+          const node = this.peers[nodeId];
+          if (!node) return;
+          this.addLog(`Sending command [${cmd}] to ${nodeId}...`);
+
+          try {
+            const url = `http://${node.ip}:${node.http_port}/api/command`;
+            const resp = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: cmd, target_id: nodeId })
+            });
+            const resJson = await resp.json();
+            this.addLog(`[${nodeId}] Response: ${JSON.stringify(resJson)}`);
+            this.fetchNodeStatus(true);
+          } catch (err) {
+            this.addLog(`Error executing command on ${nodeId}: ${err}`);
+          }
+        },
+
+        async broadcastCommand(cmd) {
+          this.addLog(`Broadcasting global command: [${cmd}]`);
+          for (const id of Object.keys(this.peers)) {
+            await this.sendNodeCommand(id, cmd);
+          }
+        },
+
+        generateSyntheticData(targetBytes) {
+          const nowTs = Date.now();
+          const baseObj = {
+            benchmark_id: `bench-${nowTs.toString(36)}`,
+            preset: this.selectedSizeLabel,
+            timestamp: nowTs / 1000.0,
+            record_count: 0,
+            records: []
+          };
+
+          const sampleStatuses = ["OK", "WARN", "SYNC", "IDLE"];
+          const estimatedRecordSize = targetBytes > 32768 ? 165.5 : 162;
+          const estimatedCount = Math.max(1, Math.floor((targetBytes - 115) / estimatedRecordSize));
+          const nowSec = Math.floor(nowTs / 1000);
+
+          for (let i = 1; i <= estimatedCount; i++) {
+            baseObj.records.push({
+              id: i,
+              timestamp: nowSec + i,
+              status: sampleStatuses[(i - 1) % sampleStatuses.length],
+              channel: (i % 8) + 1,
+              metric_val: Math.round(((i * 7.3) % 100) * 10) / 10,
+              payload: `chunk_${i}_${(i * 997).toString(16)}`
+            });
+          }
+          baseObj.record_count = baseObj.records.length;
+
+          let result = JSON.stringify(baseObj, null, 2);
+
+          if (result.length < targetBytes && baseObj.records.length > 0) {
+            const diff = targetBytes - result.length;
+            if (diff > 12) {
+              baseObj.records[baseObj.records.length - 1].payload += "_pad_" + "0".repeat(diff - 9);
+              result = JSON.stringify(baseObj, null, 2);
+            }
+          }
+
+          return result;
+        },
+
+        async runDataTransferBenchmark() {
+          if (!this.selectedTarget) {
+            alert('Please select a target node from the dropdown.');
+            return;
+          }
+          const node = this.peers[this.selectedTarget];
+          if (!node) return;
+
+          const payloadText = this.payloadText || this.generateSyntheticData(this.selectedSizeBytes);
+
+          this.bench.status = 'Transferring...';
+          this.bench.statusColor = 'var(--primary)';
+
+          if (this.selectedProtocol === 'HTTP') {
+            const startTs = performance.now();
+            const clientSendTs = Date.now() / 1000.0;
+            const payload = {
+              preset: this.selectedSizeLabel,
+              client_timestamp: clientSendTs,
+              data: payloadText
+            };
+
+            try {
+              const url = `http://${node.ip}:${node.http_port}/api/benchmark`;
+              const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+              const durationMs = performance.now() - startTs;
+              const resJson = await resp.json();
+
+              const totalBytes = new Blob([JSON.stringify(payload)]).size;
+              const throughputKbps = (totalBytes / 1024) / (durationMs / 1000);
+
+              this.bench.status = 'HTTP Success';
+              this.bench.statusColor = 'var(--success)';
+              this.bench.rtt = `${durationMs.toFixed(1)} ms`;
+              this.bench.throughput = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
+              this.bench.bytes = `${(totalBytes/1024).toFixed(1)} KB`;
+              this.bench.preview = JSON.stringify(resJson, null, 2);
+
+              this.addLog(`HTTP Benchmark to ${this.selectedTarget}: ${totalBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
+            } catch (err) {
+              this.bench.status = 'HTTP Failed';
+              this.bench.statusColor = 'var(--danger)';
+              this.addLog(`HTTP Benchmark error: ${err}`);
+            }
+          } else {
+            const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const targetWsUrl = `${wsProto}//${node.ip}:${node.http_port}/ws`;
+            this.addLog(`Connecting direct WebSocket to ${this.selectedTarget} (${targetWsUrl})...`);
+
+            let benchWs;
+            try {
+              benchWs = new WebSocket(targetWsUrl);
+            } catch (e) {
+              this.bench.status = 'WS Error';
+              this.bench.statusColor = 'var(--danger)';
+              this.addLog(`Failed to connect WebSocket to ${this.selectedTarget}: ${e}`);
+              return;
+            }
+
+            const wsTimeout = setTimeout(() => {
+              if (benchWs.readyState !== WebSocket.CLOSED) {
+                benchWs.close();
+                this.bench.status = 'WS Timeout';
+                this.bench.statusColor = 'var(--danger)';
+                this.addLog(`WebSocket benchmark to ${this.selectedTarget} timed out (> 10s).`);
+              }
+            }, 10000);
+
+            benchWs.onopen = () => {
+              const wsStartTime = performance.now();
+              const payload = {
+                action: 'ws_benchmark',
+                target_id: this.selectedTarget,
+                preset: this.selectedSizeLabel,
+                timestamp: Date.now() / 1000.0,
+                data: payloadText
+              };
+              const rawStr = JSON.stringify(payload);
+              const rawBytes = new Blob([rawStr]).size;
+
+              benchWs.onmessage = (event) => {
+                try {
+                  const data = JSON.parse(event.data);
+                  if (data.type === 'ws_benchmark_ack') {
+                    clearTimeout(wsTimeout);
+                    const durationMs = performance.now() - wsStartTime;
+                    const throughputKbps = (rawBytes / 1024) / (durationMs / 1000);
+
+                    this.bench.status = 'WebSocket Success';
+                    this.bench.statusColor = 'var(--success)';
+                    this.bench.rtt = `${durationMs.toFixed(1)} ms`;
+                    this.bench.throughput = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
+                    this.bench.bytes = `${(rawBytes/1024).toFixed(1)} KB`;
+                    this.bench.preview = JSON.stringify(data, null, 2);
+
+                    this.addLog(`WebSocket Benchmark to ${this.selectedTarget}: ${rawBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
+                    benchWs.close();
+                  }
+                } catch (e) {
+                  console.error('Benchmark WS parse error:', e);
+                }
+              };
+
+              benchWs.send(rawStr);
+            };
+
+            benchWs.onerror = (err) => {
+              clearTimeout(wsTimeout);
+              this.bench.status = 'WebSocket Failed';
+              this.bench.statusColor = 'var(--danger)';
+              this.addLog(`WebSocket Benchmark error on ${this.selectedTarget}`);
+            };
+          }
+        }
+      };
     }
   </script>
 </body>
