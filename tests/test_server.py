@@ -225,3 +225,45 @@ class TestTcpCommands(unittest.IsolatedAsyncioTestCase):
         resp = json.loads(b"".join(written_chunks).decode("utf-8").strip())
         self.assertEqual(resp["status"], "ACK")
         self.assertEqual(resp["response"], "PONG")
+
+
+class TestBeaconSender(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.daemon = C2NodeDaemon(
+            node_id="test-master-beacon",
+            role="master",
+            http_port=9000,
+            tcp_port=9877,
+            udp_port=9876,
+        )
+
+    async def test_beacon_sender_unicast_to_peers(self) -> None:
+        from c2_node import NodeMetrics
+        import time
+
+        # Add a remote peer on a routed subnet
+        self.daemon.peers["worker-remote"] = NodeMetrics(
+            node_id="worker-remote",
+            role="worker",
+            ip="192.168.2.50",
+            http_port=8080,
+            tcp_port=9877,
+            last_seen=time.time(),
+        )
+
+        mock_transport = MagicMock()
+        self.daemon.running = True
+
+        task = asyncio.create_task(self.daemon.beacon_sender_loop(mock_transport))
+        await asyncio.sleep(0.05)
+        self.daemon.running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        destinations = [call[0][1] for call in mock_transport.sendto.call_args_list]
+        self.assertIn(("<broadcast>", 9876), destinations)
+        self.assertIn(("192.168.2.50", 9876), destinations)
+

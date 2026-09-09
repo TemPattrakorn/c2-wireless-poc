@@ -253,7 +253,16 @@ class C2NodeDaemon:
                 except Exception as e:
                     logger.debug(f"Unicast send error to master {self.master_ip}: {e}")
 
-            # 3. Prune timed-out peers on master
+            # 3. Directed unicast back to all registered peers (for routed multi-subnet workers)
+            for peer in list(self.peers.values()):
+                if self.master_ip and peer.ip == self.master_ip:
+                    continue
+                try:
+                    transport.sendto(data, (peer.ip, self.udp_port))
+                except Exception as e:
+                    logger.debug(f"Unicast send error to peer {peer.ip}: {e}")
+
+            # 4. Prune timed-out peers on master
             now = time.time()
             for pid, peer in list(self.peers.items()):
                 if now - peer.last_seen > config.failsafe_timeout_sec:
