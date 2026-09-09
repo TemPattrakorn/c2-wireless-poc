@@ -141,23 +141,6 @@
     .node-id { font-weight: 700; font-size: 1rem; color: var(--text-main); }
     .node-ip { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; }
     
-    .status-pill {
-      font-size: 0.75rem;
-      font-weight: 700;
-      padding: 0.2rem 0.5rem;
-      border-radius: 4px;
-      text-transform: uppercase;
-    }
-    .status-SAFE { background: var(--success-bg); color: var(--success); }
-    .status-ARMED { background: var(--warning-bg); color: var(--warning); }
-    .status-ESTOP { background: var(--danger-bg); color: var(--danger); }
-    .status-FAILSAFE_ACTIVE { background: var(--danger-bg); color: var(--danger); animation: pulse 1s infinite; }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
     .metrics-table {
       width: 100%;
       border-collapse: collapse;
@@ -189,7 +172,7 @@
       font-weight: 600;
       color: var(--text-muted);
     }
-    select, input {
+    select, input, textarea {
       border: 1px solid var(--border-color);
       border-radius: 6px;
       padding: 0.5rem 0.75rem;
@@ -197,9 +180,21 @@
       background: white;
       color: var(--text-main);
     }
-    select:focus, input:focus {
+    textarea {
+      font-family: monospace;
+      font-size: 0.8rem;
+      resize: vertical;
+      min-height: 80px;
+    }
+    select:focus, input:focus, textarea:focus {
       outline: 2px solid var(--primary);
       border-color: transparent;
+    }
+    .byte-counter {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-align: right;
+      font-family: monospace;
     }
 
     .button-group {
@@ -284,9 +279,7 @@
           <span id="wsStatus">Connecting...</span>
         </div>
         <div class="global-actions">
-          <button class="btn-warning" onclick="broadcastCommand('ARM')">ARM ALL</button>
-          <button class="btn-success" onclick="broadcastCommand('SAFE')">SAFE ALL</button>
-          <button class="btn-danger" onclick="broadcastCommand('ESTOP')">EMERGENCY STOP</button>
+          <button class="btn-primary" onclick="broadcastCommand('PING')">PING ALL</button>
         </div>
       </div>
     </header>
@@ -349,6 +342,14 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <label for="benchCustomPayload">Payload Content</label>
+            <span class="byte-counter" id="benchByteCount">0 bytes</span>
+          </div>
+          <textarea id="benchCustomPayload" rows="4" placeholder="Enter or paste custom payload data here..."></textarea>
+        </div>
+
         <button class="btn-primary" style="justify-content: center; padding: 0.65rem;" onclick="runDataTransferBenchmark()">
           Run Benchmark Transfer
         </button>
@@ -389,12 +390,74 @@
     let peersCache = {};
     let ws = null;
 
+    // Synthetic JSON benchmark payload generator
+    function generateSyntheticData(targetBytes) {
+      const nowTs = Date.now();
+      const baseObj = {
+        benchmark_id: `bench-${nowTs.toString(36)}`,
+        preset: selectedSizeLabel,
+        timestamp: nowTs / 1000.0,
+        record_count: 0,
+        records: []
+      };
+
+      const sampleStatuses = ["OK", "WARN", "SYNC", "IDLE"];
+      const estimatedRecordSize = targetBytes > 32768 ? 165.5 : 162;
+      const estimatedCount = Math.max(1, Math.floor((targetBytes - 115) / estimatedRecordSize));
+      const nowSec = Math.floor(nowTs / 1000);
+
+      for (let i = 1; i <= estimatedCount; i++) {
+        baseObj.records.push({
+          id: i,
+          timestamp: nowSec + i,
+          status: sampleStatuses[(i - 1) % sampleStatuses.length],
+          channel: (i % 8) + 1,
+          metric_val: Math.round(((i * 7.3) % 100) * 10) / 10,
+          payload: `chunk_${i}_${(i * 997).toString(16)}`
+        });
+      }
+      baseObj.record_count = baseObj.records.length;
+
+      let result = JSON.stringify(baseObj, null, 2);
+
+      if (result.length < targetBytes && baseObj.records.length > 0) {
+        const diff = targetBytes - result.length;
+        if (diff > 12) {
+          baseObj.records[baseObj.records.length - 1].payload += "_pad_" + "0".repeat(diff - 9);
+          result = JSON.stringify(baseObj, null, 2);
+        }
+      }
+
+      return result;
+    }
+
+    function updateByteCounter(label) {
+      const textarea = document.getElementById('benchCustomPayload');
+      const counter = document.getElementById('benchByteCount');
+      if (!textarea || !counter) return;
+      const byteLen = new Blob([textarea.value]).size;
+      const presetTag = label || selectedSizeLabel;
+      counter.innerText = `${byteLen.toLocaleString()} bytes (${(byteLen / 1024).toFixed(1)} KB) [${presetTag}]`;
+    }
+
     // Initialize
     window.addEventListener('DOMContentLoaded', () => {
       addLog('System initialized. Connecting to C2 Master WebSocket...');
       connectWebSocket();
       fetchNodeStatus();
       setInterval(fetchNodeStatus, 2000);
+
+      const payloadArea = document.getElementById('benchCustomPayload');
+      if (payloadArea) {
+        payloadArea.addEventListener('input', () => {
+          selectedSizeLabel = 'Custom';
+          document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
+          updateByteCounter('Custom');
+        });
+      }
+
+      const defaultBtn = document.querySelector('.size-btn');
+      selectPayloadSize('1KB', 1024, defaultBtn);
     });
 
     // Logging
@@ -423,10 +486,15 @@
       selectedSizeLabel = label;
       selectedSizeBytes = bytes;
       document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+      if (btn) btn.classList.add('active');
+      const textarea = document.getElementById('benchCustomPayload');
+      if (textarea) {
+        textarea.value = generateSyntheticData(bytes);
+        updateByteCounter(label);
+      }
     }
 
-    // WebSocket Telemetry Connection
+    // WebSocket Telemetry Connection (Master Live Stream)
     function connectWebSocket() {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${window.location.host}/ws`;
@@ -442,8 +510,6 @@
           const data = JSON.parse(event.data);
           if (data.type === 'telemetry_update') {
             updateNodesGrid(data.peers);
-          } else if (data.type === 'ws_benchmark_ack') {
-            handleWsBenchmarkAck(data);
           }
         } catch (e) {
           console.error('WS parse error:', e);
@@ -506,7 +572,6 @@
               <div class="node-id">${node.node_id}</div>
               <div class="node-ip">${node.ip}:${node.http_port} (${node.role})</div>
             </div>
-            <span class="status-pill status-${node.state}">${node.state}</span>
           </div>
           <table class="metrics-table">
             <tr><td>Round-Trip Time</td><td style="color: ${node.rtt_ms < 20 ? 'var(--success)' : 'var(--warning)'}">${node.rtt_ms} ms</td></tr>
@@ -516,9 +581,6 @@
           </table>
           <div class="node-actions">
             <button class="btn-outline" onclick="sendNodeCommand('${id}', 'PING')">Ping</button>
-            <button class="btn-warning" onclick="sendNodeCommand('${id}', 'ARM')">Arm</button>
-            <button class="btn-success" onclick="sendNodeCommand('${id}', 'SAFE')">Safe</button>
-            <button class="btn-danger" onclick="sendNodeCommand('${id}', 'ESTOP')">E-Stop</button>
           </div>
         `;
         grid.appendChild(card);
@@ -532,7 +594,6 @@
       addLog(`Sending command [${cmd}] to ${nodeId}...`);
 
       try {
-        // Direct to worker's HTTP API (CORS enabled)
         const url = `http://${node.ip}:${node.http_port}/api/command`;
         const resp = await fetch(url, {
           method: 'POST',
@@ -555,9 +616,6 @@
     }
 
     // Benchmark Execution (HTTP POST vs. WebSocket)
-    let wsBenchStartTime = 0;
-    let wsBenchBytes = 0;
-
     async function runDataTransferBenchmark() {
       const targetId = document.getElementById('targetNode').value;
       if (!targetId) {
@@ -567,13 +625,11 @@
       const node = peersCache[targetId];
       if (!node) return;
 
+      const payloadArea = document.getElementById('benchCustomPayload');
+      const payloadText = (payloadArea && payloadArea.value) ? payloadArea.value : generateSyntheticData(selectedSizeBytes);
+
       document.getElementById('benchStatus').innerText = 'Transferring...';
       document.getElementById('benchStatus').style.color = 'var(--primary)';
-
-      // Generate synthetic test payload of specified size
-      const dummyChunk = 'X'.repeat(64);
-      const repeatCount = Math.floor(selectedSizeBytes / 64);
-      const testData = dummyChunk.repeat(repeatCount);
 
       if (selectedProtocol === 'HTTP') {
         // HTTP POST Data Transfer Test
@@ -582,7 +638,7 @@
         const payload = {
           preset: selectedSizeLabel,
           client_timestamp: clientSendTs,
-          data: testData
+          data: payloadText
         };
 
         try {
@@ -595,7 +651,7 @@
           const durationMs = performance.now() - startTs;
           const resJson = await resp.json();
 
-          const totalBytes = JSON.stringify(payload).length;
+          const totalBytes = new Blob([JSON.stringify(payload)]).size;
           const throughputKbps = (totalBytes / 1024) / (durationMs / 1000);
 
           document.getElementById('benchStatus').innerText = 'HTTP Success';
@@ -612,38 +668,75 @@
           addLog(`HTTP Benchmark error: ${err}`);
         }
       } else {
-        // WebSocket Streaming Data Transfer Test
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          alert('Master WebSocket is not connected.');
+        // Direct WebSocket Streaming Data Transfer Test
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const targetWsUrl = `${wsProto}//${node.ip}:${node.http_port}/ws`;
+        addLog(`Connecting direct WebSocket to ${targetId} (${targetWsUrl})...`);
+
+        let benchWs;
+        try {
+          benchWs = new WebSocket(targetWsUrl);
+        } catch (e) {
+          document.getElementById('benchStatus').innerText = 'WS Error';
+          document.getElementById('benchStatus').style.color = 'var(--danger)';
+          addLog(`Failed to connect WebSocket to ${targetId}: ${e}`);
           return;
         }
 
-        wsBenchStartTime = performance.now();
-        const payload = {
-          action: 'ws_benchmark',
-          target_id: targetId,
-          preset: selectedSizeLabel,
-          timestamp: Date.now() / 1000.0,
-          data: testData
+        const wsTimeout = setTimeout(() => {
+          if (benchWs.readyState !== WebSocket.CLOSED) {
+            benchWs.close();
+            document.getElementById('benchStatus').innerText = 'WS Timeout';
+            document.getElementById('benchStatus').style.color = 'var(--danger)';
+            addLog(`WebSocket benchmark to ${targetId} timed out (> 10s).`);
+          }
+        }, 10000);
+
+        benchWs.onopen = () => {
+          const wsStartTime = performance.now();
+          const payload = {
+            action: 'ws_benchmark',
+            target_id: targetId,
+            preset: selectedSizeLabel,
+            timestamp: Date.now() / 1000.0,
+            data: payloadText
+          };
+          const rawStr = JSON.stringify(payload);
+          const rawBytes = new Blob([rawStr]).size;
+
+          benchWs.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'ws_benchmark_ack') {
+                clearTimeout(wsTimeout);
+                const durationMs = performance.now() - wsStartTime;
+                const throughputKbps = (rawBytes / 1024) / (durationMs / 1000);
+
+                document.getElementById('benchStatus').innerText = 'WebSocket Success';
+                document.getElementById('benchStatus').style.color = 'var(--success)';
+                document.getElementById('benchRtt').innerText = `${durationMs.toFixed(1)} ms`;
+                document.getElementById('benchThroughput').innerText = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
+                document.getElementById('benchBytes').innerText = `${(rawBytes/1024).toFixed(1)} KB`;
+                document.getElementById('payloadPreview').innerText = JSON.stringify(data, null, 2);
+
+                addLog(`WebSocket Benchmark to ${targetId}: ${rawBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
+                benchWs.close();
+              }
+            } catch (e) {
+              console.error('Benchmark WS parse error:', e);
+            }
+          };
+
+          benchWs.send(rawStr);
         };
-        const rawStr = JSON.stringify(payload);
-        wsBenchBytes = rawStr.length;
-        ws.send(rawStr);
+
+        benchWs.onerror = (err) => {
+          clearTimeout(wsTimeout);
+          document.getElementById('benchStatus').innerText = 'WebSocket Failed';
+          document.getElementById('benchStatus').style.color = 'var(--danger)';
+          addLog(`WebSocket Benchmark error on ${targetId}`);
+        };
       }
-    }
-
-    function handleWsBenchmarkAck(data) {
-      const durationMs = performance.now() - wsBenchStartTime;
-      const throughputKbps = (wsBenchBytes / 1024) / (durationMs / 1000);
-
-      document.getElementById('benchStatus').innerText = 'WebSocket Success';
-      document.getElementById('benchStatus').style.color = 'var(--success)';
-      document.getElementById('benchRtt').innerText = `${durationMs.toFixed(1)} ms`;
-      document.getElementById('benchThroughput').innerText = `${throughputKbps.toFixed(1)} KB/s (${(throughputKbps/1024).toFixed(2)} MB/s)`;
-      document.getElementById('benchBytes').innerText = `${(wsBenchBytes/1024).toFixed(1)} KB`;
-      document.getElementById('payloadPreview').innerText = JSON.stringify(data, null, 2);
-
-      addLog(`WebSocket Benchmark completed: ${wsBenchBytes} bytes in ${durationMs.toFixed(1)}ms (${throughputKbps.toFixed(1)} KB/s)`);
     }
   </script>
 </body>
