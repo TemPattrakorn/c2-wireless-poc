@@ -18,8 +18,7 @@ MAX_TCP_FRAME_SIZE = 65536         # 64 KB per line-delimited TCP command frame
 MAX_HTTP_PAYLOAD_SIZE = 10 * 1024 * 1024  # 10 MB maximum HTTP payload limit
 
 VALID_ROLES: Set[str] = {"master", "worker"}
-VALID_STATES: Set[str] = {"SAFE", "ARMED", "ESTOP", "FAILSAFE_ACTIVE"}
-VALID_COMMANDS: Set[str] = {"PING", "ARM", "SAFE", "ESTOP", "STATUS"}
+VALID_COMMANDS: Set[str] = {"PING"}
 
 
 class C2ParseError(ValueError):
@@ -40,7 +39,6 @@ class BeaconMessage:
     seq: int
     timestamp: float
     start_time: float
-    state: str
     http_port: int
     tcp_port: int
     cpu_load: float
@@ -189,15 +187,6 @@ def parse_beacon_datagram(data: bytes) -> BeaconMessage:
     timestamp = _validate_float(d.get("timestamp", 0.0), "timestamp", min_val=0.0)
     start_time = _validate_float(d.get("start_time", 0.0), "start_time", min_val=0.0)
 
-    # state
-    state = d.get("state")
-    if not isinstance(state, str) or state.upper() not in VALID_STATES:
-        raise C2ParseError(
-            f"Field 'state' must be one of {sorted(VALID_STATES)}, got '{state}'",
-            field="state",
-        )
-    state = state.upper()
-
     # ports
     http_port = _validate_port(d.get("http_port"), "http_port")
     tcp_port = _validate_port(d.get("tcp_port"), "tcp_port")
@@ -211,7 +200,6 @@ def parse_beacon_datagram(data: bytes) -> BeaconMessage:
         seq=seq,
         timestamp=timestamp,
         start_time=start_time,
-        state=state,
         http_port=http_port,
         tcp_port=tcp_port,
         cpu_load=cpu_load,

@@ -58,7 +58,6 @@ class NodeMetrics:
     packets_sent: int = 0
     packets_received: int = 0
     packet_loss_pct: float = 0.0
-    state: str = "SAFE"  # SAFE, ARMED, ESTOP, FAILSAFE_ACTIVE
     uptime_sec: float = 0.0
     cpu_load: float = 0.0
     last_seq: int = 0
@@ -116,8 +115,6 @@ class C2NodeDaemon:
         self.running = False
         self.seq_num = 0
 
-        # Operational State: SAFE, ARMED, ESTOP, FAILSAFE_ACTIVE
-        self.state = "SAFE"
         self.last_master_contact = time.time() if self.role == "worker" else 0.0
 
         # Peer registry & active WebSocket subscribers
@@ -130,6 +127,49 @@ class C2NodeDaemon:
         # aiohttp web app and runner
         self.app: web.Application = self._create_web_app()
         self.app_runner: Optional[web.AppRunner] = None
+
+    def display_benchmark_payload(
+        self,
+        preset: str,
+        data: str,
+        raw_bytes_len: int,
+        client_ts: float,
+        sender_ip: str,
+        protocol: str,
+    ) -> None:
+        now = time.time()
+        latency_ms = (now - client_ts) * 1000.0 if client_ts > 0 else 0.0
+        time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+
+        if len(data) <= 1024:
+            content_display = data
+        else:
+            truncated_count = len(data) - 320
+            content_display = f"{data[:256]}\n... [truncated {truncated_count} characters] ...\n{data[-64:]}"
+
+        # ANSI color codes
+        CYAN = "\033[1;36m"
+        GREEN = "\033[1;32m"
+        YELLOW = "\033[1;33m"
+        MAGENTA = "\033[1;35m"
+        BOLD = "\033[1m"
+        RESET = "\033[0m"
+
+        border = "=" * 70
+        banner = (
+            f"\n{CYAN}{border}{RESET}\n"
+            f"{BOLD}{MAGENTA}>>> C2 BENCHMARK PAYLOAD RECEIVED <<<{RESET}\n"
+            f" {BOLD}Node:{RESET}       {self.node_id} ({self.role.upper()})\n"
+            f" {BOLD}Protocol:{RESET}   {GREEN}{protocol}{RESET}\n"
+            f" {BOLD}Sender:{RESET}     {sender_ip} at {time_str} ({now:.3f})\n"
+            f" {BOLD}Preset:{RESET}     {YELLOW}{preset}{RESET} | Raw Size: {raw_bytes_len} bytes | Data Chars: {len(data)}\n"
+            f" {BOLD}Client Latency:{RESET} {latency_ms:.2f} ms\n"
+            f"{CYAN}{'-' * 70}{RESET}\n"
+            f"{BOLD}Content:{RESET}\n{content_display}\n"
+            f"{CYAN}{border}{RESET}\n"
+        )
+        sys.stdout.write(banner)
+        sys.stdout.flush()
 
     def _determine_local_ip(self) -> str:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -165,9 +205,6 @@ class C2NodeDaemon:
         # Track contact with Master for failsafe
         if sender_role == "master":
             self.last_master_contact = now
-            if self.state == "FAILSAFE_ACTIVE":
-                logger.info(f"Master contact restored from {sender_ip}. Reverting to SAFE.")
-                self.state = "SAFE"
             if not self.master_ip:
                 self.master_ip = sender_ip
 
@@ -191,7 +228,6 @@ class C2NodeDaemon:
         peer.ip = sender_ip
         peer.http_port = http_p
         peer.tcp_port = tcp_p
-        peer.state = beacon.state
         peer.uptime_sec = round(now - beacon.start_time, 1)
         peer.cpu_load = beacon.cpu_load
         peer.packets_received += 1
@@ -233,7 +269,6 @@ class C2NodeDaemon:
                 "seq": self.seq_num,
                 "timestamp": time.time(),
                 "start_time": self.start_time,
-                "state": self.state,
                 "http_port": self.http_port,
                 "tcp_port": self.tcp_port,
                 "cpu_load": round(load, 2),
@@ -273,16 +308,15 @@ class C2NodeDaemon:
 
     # --- Fail-Safe Watchdog (Worker Only) ---
     async def failsafe_watchdog_loop(self) -> None:
-        """Monitors contact with C2 Master. Sets state to FAILSAFE_ACTIVE if connection drops."""
+        """Monitors contact with C2 Master. Logs warning if connection drops."""
         while self.running:
             await asyncio.sleep(1.0)
             if self.role == "worker" and self.master_ip:
                 elapsed = time.time() - self.last_master_contact
-                if elapsed > config.failsafe_timeout_sec and self.state != "FAILSAFE_ACTIVE":
-                    logger.critical(
-                        f"[FAIL-SAFE TRIGGERED] Lost Master contact for {elapsed:.1f}s! Switching to FAILSAFE_ACTIVE."
+                if elapsed > config.failsafe_timeout_sec:
+                    logger.warning(
+                        f"[FAILSAFE WATCHDOG] Lost Master contact for {elapsed:.1f}s! Silence threshold exceeded."
                     )
-                    self.state = "FAILSAFE_ACTIVE"
 
     # --- TCP Command Engine ---
     async def handle_tcp_command_client(
@@ -322,26 +356,6 @@ class C2NodeDaemon:
         logger.info(f"[C2 EXEC] Command '{cmd}' received with args: {args}")
         if cmd == "PING":
             return {"status": "ACK", "response": "PONG", "timestamp": time.time(), "node_id": self.node_id}
-        elif cmd == "ARM":
-            if self.state == "FAILSAFE_ACTIVE":
-                return {"status": "NACK", "reason": "Cannot arm while in FAILSAFE_ACTIVE", "state": self.state}
-            self.state = "ARMED"
-            return {"status": "ACK", "state": self.state, "node_id": self.node_id}
-        elif cmd == "SAFE":
-            self.state = "SAFE"
-            return {"status": "ACK", "state": self.state, "node_id": self.node_id}
-        elif cmd == "ESTOP":
-            self.state = "ESTOP"
-            logger.critical("EMERGENCY STOP (ESTOP) ACTIVE!")
-            return {"status": "ACK", "state": self.state, "node_id": self.node_id}
-        elif cmd == "STATUS":
-            return {
-                "status": "ACK",
-                "node_id": self.node_id,
-                "role": self.role,
-                "state": self.state,
-                "uptime_sec": round(time.time() - self.start_time, 1),
-            }
         else:
             return {"status": "NACK", "reason": f"Unknown command '{cmd}'"}
 
@@ -366,7 +380,6 @@ class C2NodeDaemon:
         data = {
             "node_id": self.node_id,
             "role": self.role,
-            "state": self.state,
             "uptime_sec": round(time.time() - self.start_time, 1),
             "ip": self.local_ip,
             "http_port": self.http_port,
@@ -399,6 +412,15 @@ class C2NodeDaemon:
         try:
             body = await request.read()
             bench_req = parse_http_benchmark_payload(body)
+            sender_ip = request.remote or "unknown"
+            self.display_benchmark_payload(
+                preset=bench_req.preset,
+                data=bench_req.data,
+                raw_bytes_len=len(body),
+                client_ts=bench_req.client_timestamp,
+                sender_ip=sender_ip,
+                protocol="HTTP POST",
+            )
             duration_server = time.time() - recv_time
             response_payload = {
                 "status": "BENCHMARK_COMPLETE",
@@ -443,6 +465,15 @@ class C2NodeDaemon:
                         ws_req = parse_ws_message(msg.data)
                         if ws_req.action == "ws_benchmark":
                             client_ts = ws_req.timestamp if ws_req.timestamp > 0 else time.time()
+                            sender_ip = request.remote or "unknown"
+                            self.display_benchmark_payload(
+                                preset=ws_req.preset or "Custom",
+                                data=ws_req.data or "",
+                                raw_bytes_len=len(msg.data),
+                                client_ts=client_ts,
+                                sender_ip=sender_ip,
+                                protocol="WebSocket Stream",
+                            )
                             resp_data = {
                                 "type": "ws_benchmark_ack",
                                 "node_id": self.node_id,
@@ -479,7 +510,6 @@ class C2NodeDaemon:
                 "timestamp": time.time(),
                 "node_id": self.node_id,
                 "role": self.role,
-                "state": self.state,
                 "local_ip": self.local_ip,
                 "peers": {pid: asdict(p) for pid, p in self.peers.items()},
             }
