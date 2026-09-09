@@ -36,6 +36,17 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_get_status(self) -> None:
+        from c2_node import NodeMetrics
+
+        self.master_daemon.peers["worker-1"] = NodeMetrics(
+            node_id="worker-1",
+            role="worker",
+            ip="192.168.1.10",
+            http_port=8080,
+            tcp_port=9877,
+            last_seen=1000.0,
+        )
+
         req = make_mocked_request("GET", "/api/status", app=self.master_daemon.app)
         resp = await self.master_daemon.handle_http_status(req)
 
@@ -45,8 +56,9 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
         data = json.loads(resp.text)
         self.assertEqual(data["node_id"], "test-master-srv")
         self.assertEqual(data["role"], "master")
-        self.assertEqual(data["state"], "SAFE")
+        self.assertNotIn("state", data)
         self.assertIn("peers", data)
+        self.assertNotIn("state", data["peers"]["worker-1"])
         self.assertIn("uptime_sec", data)
 
     async def test_options_cors(self) -> None:
@@ -63,7 +75,7 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
             req,
             "read",
             AsyncMock(
-                return_value=json.dumps({"command": "ARM", "target_id": "test-master-srv"}).encode("utf-8")
+                return_value=json.dumps({"command": "PING", "target_id": "test-master-srv"}).encode("utf-8")
             ),
         )
 
@@ -72,8 +84,26 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
         assert resp.text is not None
         data = json.loads(resp.text)
         self.assertEqual(data["status"], "ACK")
-        self.assertEqual(data["state"], "ARMED")
-        self.assertEqual(self.master_daemon.state, "ARMED")
+        self.assertEqual(data["response"], "PONG")
+        self.assertEqual(data["node_id"], "test-master-srv")
+
+    async def test_post_command_arm_safe_estop_rejected(self) -> None:
+        for cmd in ["ARM", "SAFE", "ESTOP"]:
+            req = make_mocked_request("POST", "/api/command", app=self.master_daemon.app)
+            setattr(
+                req,
+                "read",
+                AsyncMock(
+                    return_value=json.dumps({"command": cmd, "target_id": "test-master-srv"}).encode("utf-8")
+                ),
+            )
+
+            resp = await self.master_daemon.handle_http_command(req)
+            self.assertEqual(resp.status, 400)
+            assert resp.text is not None
+            data = json.loads(resp.text)
+            self.assertEqual(data["status"], "ERROR")
+            self.assertIn(f"Unknown command '{cmd}'", data["error"])
 
     async def test_post_command_invalid_json(self) -> None:
         req = make_mocked_request("POST", "/api/command", app=self.master_daemon.app)
@@ -107,7 +137,17 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
         req = make_mocked_request("POST", "/api/benchmark", app=self.master_daemon.app)
         setattr(req, "read", AsyncMock(return_value=raw))
 
-        resp = await self.master_daemon.handle_http_benchmark(req)
+        with patch.object(self.master_daemon, "display_benchmark_payload") as mock_disp:
+            resp = await self.master_daemon.handle_http_benchmark(req)
+            mock_disp.assert_called_once_with(
+                preset="16KB",
+                data="A" * 1024,
+                raw_bytes_len=len(raw),
+                client_ts=1234567.8,
+                sender_ip="unknown",
+                protocol="HTTP POST",
+            )
+
         self.assertEqual(resp.status, 200)
         assert resp.text is not None
         data = json.loads(resp.text)
@@ -138,6 +178,64 @@ class TestHttpHandlers(unittest.IsolatedAsyncioTestCase):
             await self.worker_daemon.handle_http_index(req)
 
 
+class TestBenchmarkPayloadDisplay(unittest.TestCase):
+    def setUp(self) -> None:
+        self.daemon = C2NodeDaemon(
+            node_id="test-node-disp",
+            role="worker",
+            http_port=8080,
+            tcp_port=9877,
+            udp_port=9876,
+        )
+
+    def test_display_benchmark_payload_short(self) -> None:
+        short_data = "Hello C2 Wireless Network!"
+        with patch("sys.stdout") as mock_stdout:
+            self.daemon.display_benchmark_payload(
+                preset="1KB",
+                data=short_data,
+                raw_bytes_len=len(short_data),
+                client_ts=1000.0,
+                sender_ip="192.168.1.50",
+                protocol="HTTP POST",
+            )
+            mock_stdout.write.assert_called_once()
+            output = mock_stdout.write.call_args[0][0]
+            self.assertIn("test-node-disp (WORKER)", output)
+            self.assertIn("HTTP POST", output)
+            self.assertIn("192.168.1.50", output)
+            self.assertIn("1KB", output)
+            self.assertIn("Hello C2 Wireless Network!", output)
+            self.assertNotIn("truncated", output)
+            mock_stdout.flush.assert_called_once()
+
+    def test_display_benchmark_payload_truncated(self) -> None:
+        # Payload > 1024 chars
+        large_data = ("A" * 256) + ("M" * 1680) + ("Z" * 64)
+        self.assertEqual(len(large_data), 2000)
+        with patch("sys.stdout") as mock_stdout:
+            self.daemon.display_benchmark_payload(
+                preset="64KB",
+                data=large_data,
+                raw_bytes_len=2000,
+                client_ts=0.0,
+                sender_ip="10.0.0.1",
+                protocol="WebSocket Stream",
+            )
+            mock_stdout.write.assert_called_once()
+            output = mock_stdout.write.call_args[0][0]
+            self.assertIn("test-node-disp (WORKER)", output)
+            self.assertIn("WebSocket Stream", output)
+            self.assertIn("10.0.0.1", output)
+            self.assertIn("64KB", output)
+            self.assertIn("A" * 256, output)
+            self.assertIn("... [truncated 1680 characters] ...", output)
+            self.assertIn("Z" * 64, output)
+            self.assertNotIn("M" * 1680, output)
+            self.assertIn("Raw Size: 2000 bytes", output)
+            mock_stdout.flush.assert_called_once()
+
+
 class TestWebSocketHandlers(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.master_daemon = C2NodeDaemon(
@@ -155,6 +253,7 @@ class TestWebSocketHandlers(unittest.IsolatedAsyncioTestCase):
         mock_msg.type = WSMsgType.TEXT
         mock_msg.data = json.dumps({
             "action": "ws_benchmark",
+            "preset": "16KB",
             "timestamp": 1234567.89,
             "data": "WS_TEST_PAYLOAD",
         })
@@ -168,8 +267,18 @@ class TestWebSocketHandlers(unittest.IsolatedAsyncioTestCase):
         mock_ws.closed = False
         mock_ws.__aiter__ = lambda self: msg_iter()
 
-        with patch("c2_node.web.WebSocketResponse", return_value=mock_ws):
-            ws = await self.master_daemon.handle_ws_session(req)
+        with patch.object(self.master_daemon, "display_benchmark_payload") as mock_disp:
+            with patch("c2_node.web.WebSocketResponse", return_value=mock_ws):
+                ws = await self.master_daemon.handle_ws_session(req)
+
+            mock_disp.assert_called_once_with(
+                preset="16KB",
+                data="WS_TEST_PAYLOAD",
+                raw_bytes_len=len(mock_msg.data),
+                client_ts=1234567.89,
+                sender_ip="unknown",
+                protocol="WebSocket Stream",
+            )
 
         self.assertTrue(mock_ws.prepare.called)
         self.assertTrue(mock_ws.send_json.called)
@@ -194,7 +303,7 @@ class TestWebSocketHandlers(unittest.IsolatedAsyncioTestCase):
         telemetry = mock_ws.send_json.call_args[0][0]
         self.assertEqual(telemetry["type"], "telemetry_update")
         self.assertEqual(telemetry["node_id"], "test-master-srv")
-        self.assertEqual(telemetry["state"], "SAFE")
+        self.assertNotIn("state", telemetry)
 
 
 class TestTcpCommands(unittest.IsolatedAsyncioTestCase):

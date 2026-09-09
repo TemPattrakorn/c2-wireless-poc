@@ -78,26 +78,28 @@ async def run_e2e_tests() -> None:
             print("  -> Auto-discovery via UDP Beacon verified successfully!")
 
             print("\n[Step 3] Testing HTTP C2 Command Execution (/api/command)...")
-            # Send ARM to worker
+            # Send PING to worker
             async with session.post(
                 f"http://127.0.0.1:{w_http}/api/command",
-                json={"command": "ARM", "target_id": "test-worker-1"},
+                json={"command": "PING", "target_id": "test-worker-1"},
             ) as resp:
-                assert resp.status == 200
-                arm_res = await resp.json()
-            print(f"  ARM Response: {arm_res}")
-            assert arm_res.get("status") == "ACK" and arm_res.get("state") == "ARMED"
+                assert resp.status == 200, f"Expected 200, got {resp.status}"
+                ping_res = await resp.json()
+            print(f"  PING Response: {ping_res}")
+            assert ping_res.get("status") == "ACK", f"Expected ACK, got {ping_res.get('status')}"
+            assert ping_res.get("response") == "PONG", f"Expected PONG, got {ping_res.get('response')}"
+            assert ping_res.get("node_id") == "test-worker-1"
 
-            # Send SAFE to worker
-            async with session.post(
-                f"http://127.0.0.1:{w_http}/api/command",
-                json={"command": "SAFE", "target_id": "test-worker-1"},
-            ) as resp:
-                assert resp.status == 200
-                safe_res = await resp.json()
-            print(f"  SAFE Response: {safe_res}")
-            assert safe_res.get("status") == "ACK" and safe_res.get("state") == "SAFE"
-            print("  -> C2 Command dispatch & state transitions verified!")
+            # Verify invalid commands (ARM, SAFE, ESTOP) are rejected with 400
+            for invalid_cmd in ["ARM", "SAFE", "ESTOP"]:
+                async with session.post(
+                    f"http://127.0.0.1:{w_http}/api/command",
+                    json={"command": invalid_cmd, "target_id": "test-worker-1"},
+                ) as resp:
+                    assert resp.status == 400, f"Expected 400 for {invalid_cmd}, got {resp.status}"
+                    err_res = await resp.json()
+                    assert err_res.get("status") == "ERROR"
+            print("  -> PING command execution and rejection of invalid commands verified!")
 
             print("\n[Step 4] Testing HTTP Data Transfer Benchmark (/api/benchmark)...")
             for size_kb in [1, 16, 64]:
@@ -131,14 +133,15 @@ async def run_e2e_tests() -> None:
                 assert msg.type == aiohttp.WSMsgType.TEXT, f"Expected text frame, got {msg.type}"
                 telemetry = msg.json()
                 assert telemetry.get("type") == "telemetry_update", f"Unexpected frame: {telemetry}"
+                assert "state" not in telemetry, "Telemetry should not contain 'state'!"
                 print(
-                    f"  [WebSocket] Received telemetry frame: Node {telemetry.get('node_id')}, "
-                    f"State: {telemetry.get('state')}"
+                    f"  [WebSocket] Received telemetry frame: Node {telemetry.get('node_id')}"
                 )
 
                 # Send client benchmark frame
                 bench_payload = {
                     "action": "ws_benchmark",
+                    "preset": "16KB",
                     "timestamp": time.time(),
                     "data": "WS_TEST_BURST_DATA" * 50,
                 }
@@ -161,20 +164,20 @@ async def run_e2e_tests() -> None:
                 assert "C2 Wireless Command & Control Dashboard" in html
                 print("  -> Web UI index.html served successfully with HTTP 200 OK!")
 
-            print("\n[Step 7] Testing Fail-Safe Watchdog on Worker Node...")
+            print("\n[Step 7] Testing Peer Silence Timeout on Worker Node...")
             print("  Terminating master process to simulate loss of communication...")
             master_proc.terminate()
             master_proc.wait(timeout=2.0)
 
-            print("  Waiting 4.5s for failsafe timeout (> 4.0s)...")
+            print("  Waiting 4.5s for silence timeout (> 4.0s)...")
             await asyncio.sleep(4.5)
 
             async with session.get(f"http://127.0.0.1:{w_http}/api/status") as resp:
                 assert resp.status == 200
                 w_status = await resp.json()
-            print(f"  Worker State after signal loss: {w_status.get('state')}")
-            assert w_status.get("state") == "FAILSAFE_ACTIVE", f"Expected FAILSAFE_ACTIVE, got {w_status.get('state')}"
-            print("  -> Fail-Safe watchdog triggered correctly! Worker safe-halted.")
+            assert "state" not in w_status
+            assert "test-master" not in w_status.get("peers", {}), "Master peer should be pruned after silence threshold!"
+            print("  -> Silence threshold exceeded: Master timed out and was pruned from peers.")
 
             print("\n" + "=" * 70)
             print(" ALL END-TO-END TESTS PASSED SUCCESSFULLY! (100% OPERATIONAL)")

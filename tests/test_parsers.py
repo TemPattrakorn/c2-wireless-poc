@@ -35,7 +35,6 @@ class TestBeaconParsing:
             "seq": 10,
             "timestamp": time.time(),
             "start_time": time.time() - 100.0,
-            "state": "SAFE",
             "http_port": 8080,
             "tcp_port": 9877,
             "cpu_load": 0.45,
@@ -50,7 +49,7 @@ class TestBeaconParsing:
         assert beacon.node_id == "worker-42"
         assert beacon.role == "worker"
         assert beacon.seq == 10
-        assert beacon.state == "SAFE"
+        assert not hasattr(beacon, "state")
         assert beacon.http_port == 8080
         assert beacon.tcp_port == 9877
         assert beacon.cpu_load == 0.45
@@ -121,28 +120,34 @@ class TestBeaconParsing:
             with pytest.raises(C2ParseError, match="Field 'http_port'"):
                 parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
 
-    def test_invalid_state(self) -> None:
+    def test_beacon_ignores_state_field(self) -> None:
         raw = self._sample_beacon_dict()
         raw["state"] = "FLYING_HIGH"
-        with pytest.raises(C2ParseError, match="Field 'state' must be one of"):
-            parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
+        beacon = parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
+        assert not hasattr(beacon, "state")
 
     def test_nan_or_inf_cpu_load(self) -> None:
         raw = self._sample_beacon_dict()
         # In JSON, NaN/Inf are parsed if literal or via float representation
-        data = b'{"node_id":"w1","role":"worker","seq":1,"timestamp":100,"start_time":50,"state":"SAFE","http_port":8080,"tcp_port":9877,"cpu_load":NaN}'
+        data = b'{"node_id":"w1","role":"worker","seq":1,"timestamp":100,"start_time":50,"http_port":8080,"tcp_port":9877,"cpu_load":NaN}'
         with pytest.raises(C2ParseError):
             parse_beacon_datagram(data)
 
 
 class TestTcpCommandParsing:
     def test_valid_commands(self) -> None:
-        for cmd in ["PING", "ping", "ARM", "arm", "SAFE", "safe", "ESTOP", "estop", "STATUS", "status"]:
+        for cmd in ["PING", "ping"]:
             data = json.dumps({"command": cmd, "target_id": "node-1", "args": {"key": "val"}}).encode("utf-8")
             req = parse_tcp_command_frame(data)
-            assert req.command == cmd.upper()
+            assert req.command == "PING"
             assert req.target_id == "node-1"
             assert req.args == {"key": "val"}
+
+    def test_rejected_commands(self) -> None:
+        for cmd in ["ARM", "SAFE", "ESTOP", "STATUS", "REBOOT", "arm", "safe", "estop"]:
+            data = json.dumps({"command": cmd}).encode("utf-8")
+            with pytest.raises(C2ParseError, match=f"Unknown command '{cmd.upper()}'"):
+                parse_tcp_command_frame(data)
 
     def test_default_values(self) -> None:
         data = json.dumps({"command": "PING"}).encode("utf-8")
@@ -157,7 +162,7 @@ class TestTcpCommandParsing:
             parse_tcp_command_frame(data)
 
     def test_invalid_args_type(self) -> None:
-        data = json.dumps({"command": "ARM", "args": ["invalid", "list"]}).encode("utf-8")
+        data = json.dumps({"command": "PING", "args": ["invalid", "list"]}).encode("utf-8")
         with pytest.raises(C2ParseError, match="Field 'args' must be a JSON object"):
             parse_tcp_command_frame(data)
 
@@ -169,11 +174,17 @@ class TestTcpCommandParsing:
 
 class TestHttpPayloadParsing:
     def test_valid_command_payload(self) -> None:
-        body = json.dumps({"command": "SAFE", "target_id": "node-2"}).encode("utf-8")
+        body = json.dumps({"command": "PING", "target_id": "node-2"}).encode("utf-8")
         req = parse_http_command_payload(body)
         assert isinstance(req, C2CommandRequest)
-        assert req.command == "SAFE"
+        assert req.command == "PING"
         assert req.target_id == "node-2"
+
+    def test_http_command_rejected(self) -> None:
+        for cmd in ["ARM", "SAFE", "ESTOP", "STATUS"]:
+            body = json.dumps({"command": cmd}).encode("utf-8")
+            with pytest.raises(C2ParseError, match=f"Unknown command '{cmd}'"):
+                parse_http_command_payload(body)
 
     def test_http_command_malformed(self) -> None:
         with pytest.raises(C2ParseError):
