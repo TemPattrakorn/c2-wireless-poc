@@ -8,23 +8,6 @@ This document details the testing architecture, execution workflows, code covera
 
 The test suite implements a **3-tier testing pyramid** designed to balance verification speed, environmental hermeticity, and physical hardware realism:
 
-```
-                      ▲
-                     / \
-                    /   \
-                   / E2E \          • Multi-process OS subprocesses
-                  /       \         • Real TCP, UDP & aiohttp sockets
-                 /─────────\        • Live system verification
-                /           \
-               / Integration \      • In-process multi-node cluster
-              /   (Hermetic)  \     • Mock transports & event loops
-             /─────────────────\    • Zero socket permissions required
-            /                   \
-           /     Unit Tests      \  • Micro-isolated component logic
-          /      (Hermetic)       \ • Strict boundary parsing & math
-         /─────────────────────────\• Sub-second execution
-```
-
 | Tier | Directory | Marker | Execution Environment | Key Responsibilities |
 | :--- | :--- | :--- | :--- | :--- |
 | **Unit** | [`tests/unit/`](../tests/unit/) | `-m unit` | In-memory / hermetic | Input parsing boundaries, mathematical link quality calculations, single-handler HTTP/WS endpoints, daemon state machines. |
