@@ -18,7 +18,7 @@ The test suite implements a **3-tier testing pyramid** designed to balance verif
 
 ## 2. Directory Layout & Test Matrix
 
-```
+```tree
 tests/
 ├── conftest.py                   # Global fixtures, factories (dummy beacons, daemon instances), port allocation
 ├── unit/
@@ -43,6 +43,7 @@ tests/
 All test runs are managed through `pytest` and configured via [`pytest.ini`](../pytest.ini).
 
 ### 3.1 Default Test Run (Hermetic Unit + Integration with Coverage)
+
 By default, running `pytest` executes all hermetic unit and integration tests, measures line coverage across `src/`, prints a terminal summary, and enforces an **85% minimum coverage threshold**:
 
 ```bash
@@ -52,11 +53,13 @@ By default, running `pytest` executes all hermetic unit and integration tests, m
 ### 3.2 Running Specific Test Tiers
 
 #### Fast Unit Tests Only
+
 ```bash
 .venv/bin/pytest tests/unit -v
 ```
 
 #### Hermetic In-Process Integration Tests
+
 ```bash
 .venv/bin/pytest tests/integration -v
 # Or via pytest marker:
@@ -64,6 +67,7 @@ By default, running `pytest` executes all hermetic unit and integration tests, m
 ```
 
 #### Full Multi-Process End-to-End System Tests
+
 > **Note:** E2E tests require local loopback socket binding permissions (`require_loopback_network`).
 
 ```bash
@@ -73,6 +77,7 @@ By default, running `pytest` executes all hermetic unit and integration tests, m
 ```
 
 #### Running a Single Test File or Test Case
+
 ```bash
 # Specific test file:
 .venv/bin/pytest tests/unit/test_node.py -v
@@ -93,10 +98,12 @@ addopts = -m "not e2e" --cov=src --cov-report=term-missing --cov-report=html:cov
 ```
 
 ### 4.1 Coverage Enforcement Policy
+
 - **Threshold:** Every automated build must achieve at least **85% code coverage** across `src/`. If coverage falls below 85%, pytest exits with code `2`.
 - **Target Areas:** All core modules (`beacon.py`, `config.py`, `node.py`, `presentation.py`, `protocol.py`, `server.py`, `tracker.py`) must maintain high individual coverage (> 90%).
 
 ### 4.2 Inspecting HTML Coverage Reports
+
 After running tests, an interactive HTML coverage report is generated in `coverage_html/`:
 
 ```bash
@@ -126,6 +133,7 @@ Configuration is defined in [`mypy.ini`](../mypy.ini) with `disallow_untyped_def
 When adding new features or fixing bugs, follow these conventions:
 
 ### 6.1 Use Shared Fixtures from `conftest.py`
+
 Avoid instantiating daemons or dummy beacons manually. Use the pre-configured fixtures:
 
 ```python
@@ -140,6 +148,7 @@ async def test_my_feature(master_daemon: C2NodeDaemon, worker_daemon: C2NodeDaem
 ```
 
 ### 6.2 In-Process Mocking for Integration Tests (`FakePostCM`)
+
 For multi-node HTTP proxying, intercept outbound HTTP client sessions in-process without binding TCP ports:
 
 ```python
