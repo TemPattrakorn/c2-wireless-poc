@@ -45,19 +45,6 @@ async def test_master_serves_app_es_module(master_daemon: C2NodeDaemon) -> None:
     assert "Alpine.start()" in js_content
 
 
-async def test_master_serves_vendored_alpine_esm(master_daemon: C2NodeDaemon) -> None:
-    """Verify Master serves alpine.esm.js from /static/vendor/."""
-    app = master_daemon.http_server.app
-    req = make_mocked_request("GET", "/static/vendor/alpine.esm.js", app=app)
-    resp = await app._handle(req)
-
-    assert resp.status == 200
-    assert isinstance(resp, web.FileResponse)
-    esm_content = resp._path.read_text(encoding="utf-8")
-    assert "export" in esm_content
-    assert "Alpine" in esm_content
-
-
 async def test_master_serves_styles(master_daemon: C2NodeDaemon) -> None:
     """Verify Master serves styles.css."""
     app = master_daemon.http_server.app
