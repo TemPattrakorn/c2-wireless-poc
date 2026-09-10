@@ -24,7 +24,12 @@ VALID_COMMANDS: Set[str] = {"PING"}
 
 
 class C2ParseError(ValueError):
-    """Raised when an untrusted network payload fails structural or semantic validation."""
+    """Raised when an untrusted network payload fails structural or semantic validation.
+
+    Args:
+        message: Descriptive error explanation.
+        field: Optional payload field name that triggered the parsing failure.
+    """
 
     def __init__(self, message: str, field: Optional[str] = None):
         super().__init__(message)
@@ -34,7 +39,18 @@ class C2ParseError(ValueError):
 
 @dataclass(frozen=True)
 class BeaconMessage:
-    """Validated UDP discovery beacon."""
+    """Validated UDP discovery beacon.
+
+    Attributes:
+        node_id: Unique identifier for the emitting node.
+        role: Node operational role ('master' or 'worker').
+        seq: Monotonically increasing sequence number for packet loss tracking.
+        timestamp: Transmission epoch timestamp (seconds) for latency calculation.
+        start_time: Node boot epoch timestamp (seconds) for uptime tracking.
+        http_port: HTTP REST / WebSocket port served by the node.
+        tcp_port: Line-delimited TCP command port served by the node.
+        cpu_load: Current 1-minute system load average normalized to CPU count.
+    """
 
     node_id: str
     role: str
@@ -48,7 +64,13 @@ class BeaconMessage:
 
 @dataclass(frozen=True)
 class C2CommandRequest:
-    """Validated C2 operational command request."""
+    """Validated C2 operational command request.
+
+    Attributes:
+        command: Operational action identifier (e.g., 'PING').
+        target_id: Target node identifier or 'all' for cluster-wide broadcast.
+        args: Optional command argument dictionary.
+    """
 
     command: str
     target_id: str = "all"
@@ -57,7 +79,13 @@ class C2CommandRequest:
 
 @dataclass(frozen=True)
 class BenchmarkRequest:
-    """Validated HTTP benchmark transfer request."""
+    """Validated HTTP benchmark transfer request.
+
+    Attributes:
+        preset: Synthetic benchmark payload size label (e.g., '1KB', '64KB').
+        client_timestamp: Client-side dispatch epoch timestamp (seconds).
+        data: Raw payload content string to measure transfer throughput.
+    """
 
     preset: str
     client_timestamp: float
@@ -66,7 +94,15 @@ class BenchmarkRequest:
 
 @dataclass(frozen=True)
 class WsBenchmarkRequest:
-    """Validated WebSocket benchmark action request."""
+    """Validated WebSocket benchmark action request.
+
+    Attributes:
+        action: WebSocket operation verb (e.g., 'ws_benchmark').
+        target_id: Optional destination node identifier.
+        preset: Optional synthetic benchmark payload size label.
+        timestamp: Client-side dispatch epoch timestamp (seconds).
+        data: Optional payload string for bidirectional throughput testing.
+    """
 
     action: str
     target_id: Optional[str] = None
@@ -80,10 +116,20 @@ def _parse_json_dict(
     max_bytes: int,
     context: str,
 ) -> Dict[str, Any]:
-    """
-    Safely decode raw bytes or text into a Python dictionary.
+    """Safely decode raw bytes or text into a Python dictionary.
 
     Enforces size limits, strict UTF-8 decoding, valid JSON syntax, and root object type.
+
+    Args:
+        raw: Raw incoming datagram, socket frame, or HTTP body.
+        max_bytes: Maximum allowed byte length for this payload category.
+        context: Human-readable context label for error reporting.
+
+    Returns:
+        Decoded JSON root dictionary.
+
+    Raises:
+        C2ParseError: If the payload violates size limits, encoding, syntax, or schema.
     """
     if isinstance(raw, bytes):
         if len(raw) > max_bytes:
@@ -122,7 +168,18 @@ def _parse_json_dict(
 
 
 def _validate_port(port_val: Any, field_name: str) -> int:
-    """Validate port is a non-boolean integer between 1 and 65535."""
+    """Validate port is a non-boolean integer between 1 and 65535.
+
+    Args:
+        port_val: Port value to inspect.
+        field_name: Name of the field for error reporting.
+
+    Returns:
+        Validated integer port number.
+
+    Raises:
+        C2ParseError: If the port is not an integer or outside 1..65535.
+    """
     if isinstance(port_val, bool) or not isinstance(port_val, int):
         raise C2ParseError(
             f"Field '{field_name}' must be an integer, got {type(port_val).__name__}",
@@ -137,7 +194,19 @@ def _validate_port(port_val: Any, field_name: str) -> int:
 
 
 def _validate_float(val: Any, field_name: str, min_val: Optional[float] = None) -> float:
-    """Validate numeric value is a valid, finite float or int."""
+    """Validate numeric value is a valid, finite float or int.
+
+    Args:
+        val: Numeric value candidate to validate.
+        field_name: Name of the field for error reporting.
+        min_val: Optional inclusive lower bound threshold.
+
+    Returns:
+        Validated finite float value.
+
+    Raises:
+        C2ParseError: If value is non-numeric, NaN, infinite, or below min_val.
+    """
     if isinstance(val, bool) or not isinstance(val, (int, float)):
         raise C2ParseError(
             f"Field '{field_name}' must be numeric, got {type(val).__name__}",
@@ -158,10 +227,16 @@ def _validate_float(val: Any, field_name: str, min_val: Optional[float] = None) 
 
 
 def parse_beacon_datagram(data: bytes) -> BeaconMessage:
-    """
-    Parse and strictly validate an incoming UDP auto-discovery beacon.
+    """Parse and strictly validate an incoming UDP auto-discovery beacon.
 
-    Raises C2ParseError on any structural, type, or constraint violation.
+    Args:
+        data: Raw UDP datagram bytes received from network socket.
+
+    Returns:
+        Validated BeaconMessage instance.
+
+    Raises:
+        C2ParseError: If payload fails structural, type, or boundary constraints.
     """
     payload_dict = _parse_json_dict(data, MAX_DATAGRAM_SIZE, "UDP beacon datagram")
 
@@ -210,7 +285,17 @@ def parse_beacon_datagram(data: bytes) -> BeaconMessage:
 
 
 def _validate_command_dict(data: Dict[str, Any]) -> C2CommandRequest:
-    """Validate parsed command dictionary structure and return a typed C2CommandRequest."""
+    """Validate parsed command dictionary structure and return a typed C2CommandRequest.
+
+    Args:
+        data: Raw decoded JSON dictionary containing command parameters.
+
+    Returns:
+        Validated C2CommandRequest instance.
+
+    Raises:
+        C2ParseError: If command verb is invalid or required fields are missing.
+    """
     cmd = data.get("command")
     if not isinstance(cmd, str) or not cmd.strip():
         raise C2ParseError("Field 'command' must be a non-empty string", field="command")
@@ -238,31 +323,48 @@ def _validate_command_dict(data: Dict[str, Any]) -> C2CommandRequest:
 
 
 def parse_tcp_command_frame(line: bytes) -> C2CommandRequest:
-    """
-    Parse and validate a line-delimited TCP command frame.
+    """Parse and validate a line-delimited TCP command frame.
 
-    Raises C2ParseError on any structural, type, or constraint violation.
+    Args:
+        line: Single line-delimited byte chunk read from TCP client stream.
+
+    Returns:
+        Validated C2CommandRequest instance.
+
+    Raises:
+        C2ParseError: On size boundary, encoding, or command validation violations.
     """
     payload_dict = _parse_json_dict(line, MAX_TCP_FRAME_SIZE, "TCP command frame")
     return _validate_command_dict(payload_dict)
 
 
 def parse_http_command_payload(body: bytes) -> C2CommandRequest:
-    """
-    Parse and validate an HTTP JSON body sent to POST /api/command.
+    """Parse and validate an HTTP JSON body sent to POST /api/command.
 
-    Raises C2ParseError on any structural, type, or constraint violation.
+    Args:
+        body: Raw request body bytes from the incoming HTTP request.
+
+    Returns:
+        Validated C2CommandRequest instance.
+
+    Raises:
+        C2ParseError: On size boundary, encoding, or command validation violations.
     """
     payload_dict = _parse_json_dict(body, MAX_COMMAND_PAYLOAD_SIZE, "HTTP command payload")
     return _validate_command_dict(payload_dict)
 
 
-
 def parse_http_benchmark_payload(body: bytes) -> BenchmarkRequest:
-    """
-    Parse and validate an HTTP JSON body sent to POST /api/benchmark.
+    """Parse and validate an HTTP JSON body sent to POST /api/benchmark.
 
-    Raises C2ParseError on any structural, type, or constraint violation.
+    Args:
+        body: Raw request body bytes from the incoming HTTP request.
+
+    Returns:
+        Validated BenchmarkRequest instance.
+
+    Raises:
+        C2ParseError: On size boundary, encoding, or schema validation violations.
     """
     payload_dict = _parse_json_dict(body, MAX_HTTP_PAYLOAD_SIZE, "HTTP benchmark payload")
 
@@ -285,11 +387,16 @@ def parse_http_benchmark_payload(body: bytes) -> BenchmarkRequest:
 
 
 def parse_ws_message(msg_data: str | bytes) -> WsBenchmarkRequest:
-    """
-    Parse and validate an incoming WebSocket JSON message.
+    """Parse and validate an incoming WebSocket JSON message.
 
-    Currently supports the 'ws_benchmark' action.
-    Raises C2ParseError on unknown action or invalid schema.
+    Args:
+        msg_data: Raw text or binary frame received over WebSocket.
+
+    Returns:
+        Validated WsBenchmarkRequest instance.
+
+    Raises:
+        C2ParseError: On unknown action verb, invalid types, or malformed JSON.
     """
     payload_dict = _parse_json_dict(msg_data, MAX_HTTP_PAYLOAD_SIZE, "WebSocket message")
 
@@ -323,3 +430,4 @@ def parse_ws_message(msg_data: str | bytes) -> WsBenchmarkRequest:
         )
 
     raise C2ParseError(f"Unsupported WebSocket action '{action}'", field="action")
+

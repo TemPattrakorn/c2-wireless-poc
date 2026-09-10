@@ -19,6 +19,30 @@ logger = logging.getLogger("C2Tracker")
 
 @dataclass
 class NodeMetrics:
+    """Rolling link quality and operational telemetry for a tracked peer node.
+
+    Latency calculations measure one-way transit delay (OWD), assuming host clocks
+    are synchronized via NTP or PTP. Jitter is computed via moving window consecutive
+    difference averages, and packet loss is inferred from UDP sequence number gaps.
+
+    Attributes:
+        node_id: Unique identifier of the remote peer node.
+        role: Peer node role ('master' or 'worker').
+        ip: Last known IP address of the peer.
+        http_port: HTTP port served by the peer.
+        tcp_port: TCP command port served by the peer.
+        last_seen: Epoch timestamp when the last valid beacon was received.
+        latency_ms: Smoothed one-way transit delay estimate in milliseconds.
+        jitter_ms: Average consecutive packet arrival variance in milliseconds.
+        packets_received: Total number of valid beacons received from this peer.
+        packet_loss_pct: Estimated packet loss percentage over the rolling window.
+        uptime_sec: Elapsed uptime in seconds reported by the peer.
+        cpu_load: Current 1-minute CPU load average reported by the peer.
+        last_seq: Most recent beacon sequence number observed.
+        seq_history: Rolling deque of (expected_packets, lost_packets) tuples.
+        latency_history: Rolling deque of raw transit latency samples.
+    """
+
     node_id: str
     role: str
     ip: str
@@ -38,9 +62,11 @@ class NodeMetrics:
 
 
 class PeerTracker:
-    """
-    Encapsulates peer registry, rolling latency/jitter/packet-loss statistics,
-    and silence timeout pruning.
+    """Encapsulates peer registry, rolling link quality statistics, and silence pruning.
+
+    Args:
+        history_window: Maximum number of recent samples retained for moving averages.
+            Defaults to config.link_history_window if None.
     """
 
     def __init__(self, history_window: Optional[int] = None):
@@ -48,8 +74,14 @@ class PeerTracker:
         self.history_window = history_window if history_window is not None else config.link_history_window
 
     def update_peer(self, beacon: BeaconMessage, sender_ip: str) -> NodeMetrics:
-        """
-        Ingest an incoming beacon datagram and update link quality metrics.
+        """Ingest an incoming beacon datagram and update link quality metrics.
+
+        Args:
+            beacon: Validated UDP beacon message received from the remote peer.
+            sender_ip: Source IP address of the incoming datagram packet.
+
+        Returns:
+            Updated NodeMetrics instance for the reporting peer.
         """
         now = time.time()
         sender_id = beacon.node_id
@@ -113,9 +145,13 @@ class PeerTracker:
         return peer
 
     def prune_stale_peers(self, timeout_sec: float) -> List[str]:
-        """
-        Check for peers that haven't been seen within timeout_sec and remove them.
-        Returns the list of pruned peer IDs.
+        """Prune peers that have not emitted a beacon within the timeout threshold.
+
+        Args:
+            timeout_sec: Maximum elapsed silence time in seconds before removal.
+
+        Returns:
+            List of node IDs that timed out and were removed from the registry.
         """
         now = time.time()
         timed_out: List[str] = []
@@ -127,7 +163,11 @@ class PeerTracker:
         return timed_out
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return serializable dictionary of all active peers."""
+        """Convert peer registry into a JSON-serializable dictionary.
+
+        Returns:
+            Dictionary mapping peer IDs to their serialized metric dictionaries.
+        """
         result: Dict[str, Any] = {}
         for peer_id, peer in self.peers.items():
             d = asdict(peer)
