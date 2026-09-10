@@ -361,10 +361,10 @@ c2-wireless-poc/
 │   └── testing.md            # 3-tier testing architecture, fixtures, and authoring guidelines
 │
 ├── scripts/                  # Operational launch & setup utilities
-│   ├── setup.sh              # Automatic environment & dependency bootstrap
+│   ├── common.sh             # Shared environment resolution and runtime detection
 │   ├── run_master.sh         # Master ground station launcher with port configuration
 │   ├── run_worker.sh         # Worker node launcher with automatic/explicit master IP
-│   └── run_tests.sh          # Automated test suite and static type check executor
+│   └── setup.sh              # Automatic environment & dependency bootstrap
 │
 ├── src/                      # Application source code
 │   ├── config.py             # Global constants, network defaults, and environment overrides
