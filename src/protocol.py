@@ -15,10 +15,12 @@ from typing import Any, Dict, Optional, Set
 # Maximum payload safety boundaries
 MAX_DATAGRAM_SIZE = 65507          # Max theoretical IPv4 UDP datagram payload
 MAX_TCP_FRAME_SIZE = 65536         # 64 KB per line-delimited TCP command frame
+MAX_COMMAND_PAYLOAD_SIZE = 65536   # 64 KB maximum HTTP/TCP command payload limit
 MAX_HTTP_PAYLOAD_SIZE = 10 * 1024 * 1024  # 10 MB maximum HTTP payload limit
 
 VALID_ROLES: Set[str] = {"master", "worker"}
 VALID_COMMANDS: Set[str] = {"PING"}
+
 
 
 class C2ParseError(ValueError):
@@ -95,13 +97,14 @@ def _parse_json_dict(
         except UnicodeDecodeError as e:
             raise C2ParseError(f"Invalid UTF-8 encoding in {context}: {e}") from e
     elif isinstance(raw, str):
-        if len(raw.encode("utf-8")) > max_bytes:
+        if len(raw) > max_bytes or len(raw.encode("utf-8")) > max_bytes:
             raise C2ParseError(
                 f"{context} exceeds maximum permitted length of {max_bytes} bytes"
             )
         if not raw.strip():
             raise C2ParseError(f"{context} is empty")
         text = raw
+
     else:
         raise C2ParseError(f"Expected str or bytes for {context}, got {type(raw).__name__}")
 
@@ -160,17 +163,17 @@ def parse_beacon_datagram(data: bytes) -> BeaconMessage:
 
     Raises C2ParseError on any structural, type, or constraint violation.
     """
-    d = _parse_json_dict(data, MAX_DATAGRAM_SIZE, "UDP beacon datagram")
+    payload_dict = _parse_json_dict(data, MAX_DATAGRAM_SIZE, "UDP beacon datagram")
 
     # node_id
-    node_id = d.get("node_id")
+    node_id = payload_dict.get("node_id")
     if not isinstance(node_id, str) or not node_id.strip():
         raise C2ParseError("Field 'node_id' must be a non-empty string", field="node_id")
     if len(node_id) > 128:
         raise C2ParseError("Field 'node_id' exceeds maximum length of 128 characters", field="node_id")
 
     # role
-    role = d.get("role")
+    role = payload_dict.get("role")
     if not isinstance(role, str) or role.lower() not in VALID_ROLES:
         raise C2ParseError(
             f"Field 'role' must be one of {sorted(VALID_ROLES)}, got '{role}'",
@@ -179,20 +182,20 @@ def parse_beacon_datagram(data: bytes) -> BeaconMessage:
     role = role.lower()
 
     # seq
-    seq = d.get("seq")
+    seq = payload_dict.get("seq")
     if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
         raise C2ParseError("Field 'seq' must be a non-negative integer", field="seq")
 
     # timestamps
-    timestamp = _validate_float(d.get("timestamp", 0.0), "timestamp", min_val=0.0)
-    start_time = _validate_float(d.get("start_time", 0.0), "start_time", min_val=0.0)
+    timestamp = _validate_float(payload_dict.get("timestamp", 0.0), "timestamp", min_val=0.0)
+    start_time = _validate_float(payload_dict.get("start_time", 0.0), "start_time", min_val=0.0)
 
     # ports
-    http_port = _validate_port(d.get("http_port"), "http_port")
-    tcp_port = _validate_port(d.get("tcp_port"), "tcp_port")
+    http_port = _validate_port(payload_dict.get("http_port"), "http_port")
+    tcp_port = _validate_port(payload_dict.get("tcp_port"), "tcp_port")
 
     # cpu_load
-    cpu_load = _validate_float(d.get("cpu_load", 0.0), "cpu_load", min_val=0.0)
+    cpu_load = _validate_float(payload_dict.get("cpu_load", 0.0), "cpu_load", min_val=0.0)
 
     return BeaconMessage(
         node_id=node_id.strip(),
@@ -206,15 +209,9 @@ def parse_beacon_datagram(data: bytes) -> BeaconMessage:
     )
 
 
-def parse_tcp_command_frame(line: bytes) -> C2CommandRequest:
-    """
-    Parse and validate a line-delimited TCP command frame.
-
-    Raises C2ParseError on any structural, type, or constraint violation.
-    """
-    d = _parse_json_dict(line, MAX_TCP_FRAME_SIZE, "TCP command frame")
-
-    cmd = d.get("command")
+def _validate_command_dict(data: Dict[str, Any]) -> C2CommandRequest:
+    """Validate parsed command dictionary structure and return a typed C2CommandRequest."""
+    cmd = data.get("command")
     if not isinstance(cmd, str) or not cmd.strip():
         raise C2ParseError("Field 'command' must be a non-empty string", field="command")
     cmd_upper = cmd.strip().upper()
@@ -224,12 +221,12 @@ def parse_tcp_command_frame(line: bytes) -> C2CommandRequest:
             field="command",
         )
 
-    target_id = d.get("target_id", "all")
+    target_id = data.get("target_id", "all")
     if not isinstance(target_id, str):
         raise C2ParseError("Field 'target_id' must be a string", field="target_id")
     target_id = target_id.strip() if target_id.strip() else "all"
 
-    args = d.get("args", {})
+    args = data.get("args", {})
     if not isinstance(args, dict):
         raise C2ParseError("Field 'args' must be a JSON object (dict)", field="args")
 
@@ -238,6 +235,16 @@ def parse_tcp_command_frame(line: bytes) -> C2CommandRequest:
         target_id=target_id,
         args=args,
     )
+
+
+def parse_tcp_command_frame(line: bytes) -> C2CommandRequest:
+    """
+    Parse and validate a line-delimited TCP command frame.
+
+    Raises C2ParseError on any structural, type, or constraint violation.
+    """
+    payload_dict = _parse_json_dict(line, MAX_TCP_FRAME_SIZE, "TCP command frame")
+    return _validate_command_dict(payload_dict)
 
 
 def parse_http_command_payload(body: bytes) -> C2CommandRequest:
@@ -246,32 +253,9 @@ def parse_http_command_payload(body: bytes) -> C2CommandRequest:
 
     Raises C2ParseError on any structural, type, or constraint violation.
     """
-    d = _parse_json_dict(body, MAX_TCP_FRAME_SIZE, "HTTP command payload")
+    payload_dict = _parse_json_dict(body, MAX_COMMAND_PAYLOAD_SIZE, "HTTP command payload")
+    return _validate_command_dict(payload_dict)
 
-    cmd = d.get("command")
-    if not isinstance(cmd, str) or not cmd.strip():
-        raise C2ParseError("Field 'command' must be a non-empty string", field="command")
-    cmd_upper = cmd.strip().upper()
-    if cmd_upper not in VALID_COMMANDS:
-        raise C2ParseError(
-            f"Unknown command '{cmd_upper}'. Valid commands: {sorted(VALID_COMMANDS)}",
-            field="command",
-        )
-
-    target_id = d.get("target_id", "all")
-    if not isinstance(target_id, str):
-        raise C2ParseError("Field 'target_id' must be a string", field="target_id")
-    target_id = target_id.strip() if target_id.strip() else "all"
-
-    args = d.get("args", {})
-    if not isinstance(args, dict):
-        raise C2ParseError("Field 'args' must be a JSON object (dict)", field="args")
-
-    return C2CommandRequest(
-        command=cmd_upper,
-        target_id=target_id,
-        args=args,
-    )
 
 
 def parse_http_benchmark_payload(body: bytes) -> BenchmarkRequest:
@@ -280,16 +264,16 @@ def parse_http_benchmark_payload(body: bytes) -> BenchmarkRequest:
 
     Raises C2ParseError on any structural, type, or constraint violation.
     """
-    d = _parse_json_dict(body, MAX_HTTP_PAYLOAD_SIZE, "HTTP benchmark payload")
+    payload_dict = _parse_json_dict(body, MAX_HTTP_PAYLOAD_SIZE, "HTTP benchmark payload")
 
-    preset = d.get("preset", "Custom")
+    preset = payload_dict.get("preset", "Custom")
     if not isinstance(preset, str):
         raise C2ParseError("Field 'preset' must be a string", field="preset")
 
-    client_ts_raw = d.get("client_timestamp", 0.0)
+    client_ts_raw = payload_dict.get("client_timestamp", 0.0)
     client_ts = _validate_float(client_ts_raw, "client_timestamp", min_val=0.0)
 
-    data = d.get("data", "")
+    data = payload_dict.get("data", "")
     if not isinstance(data, str):
         raise C2ParseError("Field 'data' must be a string", field="data")
 
@@ -307,26 +291,26 @@ def parse_ws_message(msg_data: str | bytes) -> WsBenchmarkRequest:
     Currently supports the 'ws_benchmark' action.
     Raises C2ParseError on unknown action or invalid schema.
     """
-    d = _parse_json_dict(msg_data, MAX_HTTP_PAYLOAD_SIZE, "WebSocket message")
+    payload_dict = _parse_json_dict(msg_data, MAX_HTTP_PAYLOAD_SIZE, "WebSocket message")
 
-    action = d.get("action")
+    action = payload_dict.get("action")
     if not isinstance(action, str) or not action.strip():
         raise C2ParseError("Field 'action' must be a non-empty string", field="action")
     action = action.strip()
 
     if action == "ws_benchmark":
-        target_id = d.get("target_id")
+        target_id = payload_dict.get("target_id")
         if target_id is not None and not isinstance(target_id, str):
             raise C2ParseError("Field 'target_id' must be a string or null", field="target_id")
 
-        preset = d.get("preset")
+        preset = payload_dict.get("preset")
         if preset is not None and not isinstance(preset, str):
             raise C2ParseError("Field 'preset' must be a string or null", field="preset")
 
-        ts_raw = d.get("timestamp", 0.0)
+        ts_raw = payload_dict.get("timestamp", 0.0)
         timestamp = _validate_float(ts_raw, "timestamp", min_val=0.0)
 
-        data = d.get("data")
+        data = payload_dict.get("data")
         if data is not None and not isinstance(data, str):
             raise C2ParseError("Field 'data' must be a string or null", field="data")
 
