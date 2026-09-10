@@ -53,6 +53,8 @@ Thumbs.db
 .pytest_cache/
 .mypy_cache/
 .coverage
+.coverage.*
+coverage_html/
 htmlcov/
 .tox/
 .nox/
