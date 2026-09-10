@@ -1,5 +1,14 @@
 #!/bin/bash
-# Common environment and dependency resolution routines for C2 runner scripts.
+# ==============================================================================
+# common.sh — Shared environment and Python runtime resolution routines
+#
+# Usage:
+#   source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+#   ensure_python_environment [PROJECT_ROOT]
+#
+# Exports:
+#   PYTHON_BIN — Path to functional Python 3 binary with 'aiohttp' installed.
+# ==============================================================================
 
 ensure_python_environment() {
   local root_dir="${1:-${PROJECT_ROOT:-$SCRIPT_DIR}}"

@@ -1,5 +1,13 @@
 #!/bin/bash
-# Setup script for C2 Wireless Network node dependencies (Ubuntu / Debian / Linux / macOS)
+# ==============================================================================
+# setup.sh — Automated dependency installer and web asset bootstrapping
+#
+# Usage:
+#   ./scripts/setup.sh
+#
+# Supported Platforms:
+#   Debian / Ubuntu (apt with venv fallback), macOS / Linux (python3 -m venv)
+# ==============================================================================
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

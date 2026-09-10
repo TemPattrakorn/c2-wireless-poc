@@ -1,3 +1,14 @@
+/**
+ * @file app.js — C2 Wireless Command & Control Dashboard Client
+ * 
+ * Implements the Alpine.js reactive component managing:
+ * - Real-time WebSocket telemetry ingestion and automatic reconnection
+ * - Live peer node registry rendering (metrics, latency, jitter, packet loss)
+ * - Cluster-wide and targeted command dispatch (PING)
+ * - Interactive data transfer throughput lab (HTTP POST / WebSocket)
+ * - Real-time console activity log feed
+ */
+
 import Alpine from 'alpinejs';
 
 export function c2Dashboard() {

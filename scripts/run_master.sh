@@ -1,5 +1,14 @@
 #!/bin/bash
-# Launch C2 Master Ground Station on PC0
+# ==============================================================================
+# run_master.sh — Launch C2 Master Ground Station daemon on PC0
+#
+# Usage:
+#   ./scripts/run_master.sh [NODE_ID] [HTTP_PORT]
+#
+# Arguments:
+#   NODE_ID   — Unique node identifier (default: "c2-master")
+#   HTTP_PORT — HTTP REST & Web Dashboard port (default: 9000)
+# ==============================================================================
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,5 +1,15 @@
 #!/bin/bash
-# Launch C2 Remote Worker Node (PC1 - PCn)
+# ==============================================================================
+# run_worker.sh — Launch C2 Remote Worker Node daemon (PC1 - PCn)
+#
+# Usage:
+#   ./scripts/run_worker.sh [NODE_ID] [MASTER_IP] [HTTP_PORT]
+#
+# Arguments:
+#   NODE_ID   — Unique node identifier (default: "node-1")
+#   MASTER_IP — Optional IP of Master for directed unicast registration
+#   HTTP_PORT — HTTP REST & WebSocket endpoint port (default: 8080)
+# ==============================================================================
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
