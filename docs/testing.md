@@ -1,6 +1,6 @@
 # Testing Architecture & Verification Guide
 
-This document details the testing architecture, execution workflows, code coverage policies, and test authoring standards for the **C2 Wireless Network Proof-of-Concept**.
+This document details the testing architecture, execution workflows, and test authoring standards for the **C2 Wireless Network Proof-of-Concept**.
 
 ---
 
@@ -42,9 +42,9 @@ tests/
 
 All test runs are managed through `pytest` and configured via [`pytest.ini`](../pytest.ini).
 
-### 3.1 Default Test Run (Hermetic Unit + Integration with Coverage)
+### 3.1 Default Test Run (Hermetic Unit + Integration)
 
-By default, running `pytest` executes all hermetic unit and integration tests, measures line coverage across `src/`, prints a terminal summary, and enforces an **85% minimum coverage threshold**:
+By default, running `pytest` executes all hermetic unit and integration tests:
 
 ```bash
 .venv/bin/pytest
@@ -88,35 +88,7 @@ By default, running `pytest` executes all hermetic unit and integration tests, m
 
 ---
 
-## 4. Code Coverage & Quality Gates
-
-Code coverage is monitored via `pytest-cov` and configured directly in [`pytest.ini`](../pytest.ini):
-
-```ini
-[pytest]
-addopts = -m "not e2e" --cov=src --cov-report=term-missing --cov-report=html:coverage_html --cov-fail-under=85
-```
-
-### 4.1 Coverage Enforcement Policy
-
-- **Threshold:** Every automated build must achieve at least **85% code coverage** across `src/`. If coverage falls below 85%, pytest exits with code `2`.
-- **Target Areas:** All core modules (`beacon.py`, `config.py`, `node.py`, `presentation.py`, `protocol.py`, `server.py`, `tracker.py`) must maintain high individual coverage (> 90%).
-
-### 4.2 Inspecting HTML Coverage Reports
-
-After running tests, an interactive HTML coverage report is generated in `coverage_html/`:
-
-```bash
-# On macOS:
-open coverage_html/index.html
-
-# On Linux:
-xdg-open coverage_html/index.html
-```
-
----
-
-## 5. Static Type Checking (mypy)
+## 4. Static Type Checking (mypy)
 
 Strict static typing is enforced with `mypy` across all source modules and test files:
 
@@ -128,11 +100,11 @@ Configuration is defined in [`mypy.ini`](../mypy.ini) with `disallow_untyped_def
 
 ---
 
-## 6. Test Authoring Guidelines
+## 5. Test Authoring Guidelines
 
 When adding new features or fixing bugs, follow these conventions:
 
-### 6.1 Use Shared Fixtures from `conftest.py`
+### 5.1 Use Shared Fixtures from `conftest.py`
 
 Avoid instantiating daemons or dummy beacons manually. Use the pre-configured fixtures:
 
@@ -147,7 +119,7 @@ async def test_my_feature(master_daemon: C2NodeDaemon, worker_daemon: C2NodeDaem
     assert "worker-custom" in master_daemon.peers
 ```
 
-### 6.2 In-Process Mocking for Integration Tests (`FakePostCM`)
+### 5.2 In-Process Mocking for Integration Tests (`FakePostCM`)
 
 For multi-node HTTP proxying, intercept outbound HTTP client sessions in-process without binding TCP ports:
 
