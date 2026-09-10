@@ -16,8 +16,9 @@ A lightweight, zero-dependency software suite to validate and benchmark wireless
                                          │ Gigabit LAN
                  ┌───────────────────────┴───────────────────────┐
                  │               Wireless Network                │
-                 │   • UDP 9876: Auto-discovery, RTT & Jitter    │
-                 │   • TCP 9877: Guaranteed C2 Commands (ARM)    │
+                 │   • UDP 9876: Auto-discovery, Latency & Jitter│
+                 │   • TCP 9877: Guaranteed C2 Commands (PING)   │
+                 │   • HTTP 9000/api/proxy: Master Command Proxy │
                  │   • HTTP 8080: JSON REST API & Benchmarks     │
                  │   • WS 8080/ws: Real-time Telemetry Stream    │
                  └───────┬─────────────────┬─────────────────┬───┘
@@ -29,14 +30,15 @@ A lightweight, zero-dependency software suite to validate and benchmark wireless
 ```
 
 * **Lightweight & Production-Ready:** Powered by Python 3 and `aiohttp` for asynchronous HTTP REST endpoints and live WebSocket streaming.
-* **Strictly Typed & Validated (`c2_protocol.py`):** Comprehensive schema validation and input boundary enforcement against untrusted network inputs (UDP beacons, TCP command frames, HTTP payloads, WebSocket messages) with `mypy` strict mode.
+* **Strictly Typed & Validated (`src/protocol.py`):** Comprehensive schema validation and input boundary enforcement against untrusted network inputs (UDP beacons, TCP command frames, HTTP payloads, WebSocket messages) with `mypy` strict mode.
 * **Broad Hardware Compatibility:** Runs out-of-the-box on Linux, macOS, and Windows across commodity PCs, laptops, mini-PCs (Intel NUC), single-board computers (Raspberry Pi, NVIDIA Jetson, Orange Pi), and robotics/drone companion computers.
 * **Network & Router Agnostic:** Works across any standard TCP/IP network: commercial Wi-Fi routers (Wi-Fi 5/6/6E/7), enterprise access points (APs), ad-hoc mesh networks, cellular routers, or wired Ethernet.
-* **Auto-Discovery & Link Health:** High-frequency UDP beacons (1 Hz) continuously monitor Round-Trip Time (RTT), wireless jitter, and sequence-based packet loss.
+* **Auto-Discovery & Link Health:** High-frequency UDP beacons (1 Hz) continuously monitor one-way transit latency (OWD with NTP synchronization), wireless jitter, and sequence-based packet loss.
+* **Master Command Proxy:** Centralized `/api/proxy/{node_id}/command` endpoint on the Master node enables operators to dispatch commands to any field worker node through the Master, eliminating CORS, NAT, and private subnet barriers.
 * **Dual-Channel Data Transfer:**
   * **HTTP POST (JSON):** On-demand request/response for state inspection, command dispatch, and throughput benchmarking.
   * **WebSocket Telemetry Stream:** Live 2 Hz telemetry streaming and duplex data transfer testing.
-* **Automated Fail-Safe:** If a worker node loses communication with the C2 Master for > 4.0 seconds, it autonomously switches its operational state to `FAILSAFE_ACTIVE` / `SAFE`.
+* **Automated Fail-Safe:** If communication with a node is lost for > 4.0 seconds, the watchdog prunes the timed-out peer from the active registry and logs a critical silence warning.
 
 ---
 
@@ -161,7 +163,7 @@ pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest)
 Strict static typing is enforced across all core modules and tests:
 
 ```bash
-.venv/bin/mypy c2_node.py c2_protocol.py config.py test_e2e.py tests/
+.venv/bin/mypy src tests
 ```
 
 ### Unit & Untrusted Input Parser Tests (pytest)
@@ -169,7 +171,7 @@ Strict static typing is enforced across all core modules and tests:
 Run the test suite covering input validation edge cases (malformed JSON, corrupted data, type mismatches, out-of-range ports, injection attempts) and HTTP/WebSocket endpoints:
 
 ```bash
-.venv/bin/pytest tests/ -v
+.venv/bin/pytest tests/ -m "not e2e" -v
 ```
 
 ### End-to-End Automated System Verification
@@ -177,6 +179,8 @@ Run the test suite covering input validation edge cases (malformed JSON, corrupt
 Run the full multi-process end-to-end integration test (UDP auto-discovery, HTTP commands, data transfer benchmarks, WebSocket telemetry stream, static UI serving, and failsafe watchdog):
 
 ```bash
-.venv/bin/python3 test_e2e.py
+.venv/bin/python3 -m tests.test_e2e
+# Or run all tests including e2e via pytest:
+.venv/bin/pytest tests/ -v
 ```
 
