@@ -1,5 +1,5 @@
 """
-Unit tests for untrusted input parsing and validation in c2_protocol.py.
+Unit tests for untrusted input parsing and validation in protocol.py.
 Covers UDP discovery beacons, TCP command frames, HTTP request payloads,
 and WebSocket message frames.
 """
@@ -10,7 +10,7 @@ import json
 import time
 import pytest
 
-from c2_protocol import (
+from protocol import (
     MAX_DATAGRAM_SIZE,
     MAX_HTTP_PAYLOAD_SIZE,
     MAX_TCP_FRAME_SIZE,
