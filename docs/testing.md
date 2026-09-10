@@ -26,7 +26,9 @@ tests/
 │   ├── test_parsers.py           # Untrusted input boundaries (UDP beacons, TCP frames, HTTP JSON, WebSockets)
 │   ├── test_node.py              # Daemon lifecycle, IP detection, failsafe loop, and CLI argument parsing
 │   ├── test_beacon.py            # UDPBeaconProtocol socket handling and BeaconService transmission
-│   ├── test_server.py            # HTTP REST, CORS, Master command proxy, WebSocket streaming, TCP commands
+│   ├── test_tcp.py               # Line-delimited TCP command protocol and socket framing
+│   ├── test_rest.py              # HTTP REST endpoints, CORS, Master proxy routing, and error boundaries
+│   ├── test_ws.py                # WebSocketManager lifecycle, telemetry broadcasting, and duplex benchmarks
 │   ├── test_presentation.py      # Console ANSI color formatting, TTY detection, and payload display sinks
 │   ├── test_tracker.py           # Rolling latency, jitter, sequence resets, and carrier loss pruning
 │   └── test_web_assets.py        # Static asset serving, ES module importmaps, and Alpine.js bundling
@@ -90,7 +92,7 @@ By default, running `pytest` executes all hermetic unit and integration tests:
 
 ## 4. Static Type Checking (mypy)
 
-Strict static typing is enforced with `mypy` across all source modules and test files:
+Strict static typing is enforced with `mypy` across all 24 source modules and test files:
 
 ```bash
 .venv/bin/mypy src tests

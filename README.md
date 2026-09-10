@@ -107,7 +107,7 @@ Within 1 second, every active node will automatically appear on the C2 Master's 
 ## 3. Web Dashboard Features
 
 1. **Active Node Cards:**
-   * Displays real-time RTT (ms), wireless jitter, packet loss percentage, CPU load, and uptime.
+   * Displays real-time one-way transit latency (ms) (requires NTP host clock synchronization), wireless jitter, packet loss percentage, CPU load, and uptime.
    * Direct `Ping` button for any specific node.
 2. **Global Controls:**
    * `PING ALL`: Dispatches a concurrent ping to all discovered nodes.
@@ -122,30 +122,122 @@ Within 1 second, every active node will automatically appear on the C2 Master's 
 
 ---
 
-## 4. Manual / Direct CLI Testing (curl & APIs)
+## 4. Manual / Direct CLI Testing (curl, netcat & WebSockets)
 
-You can also interact directly with any worker node via standard HTTP commands:
+You can interact directly with any node or the Master proxy via standard terminal tools:
 
+### 4.1 Reliable Line-Delimited TCP Command (Port 9877)
 ```bash
-# Query node health and status:
-curl http://<NODE_IP>:8080/api/status
+# Send direct PING command to a worker node via netcat:
+echo '{"command": "PING", "target_id": "node-1"}' | nc <NODE_IP> 9877
+```
 
-# Send a PING command to node-1:
+### 4.2 HTTP REST API via curl
+```bash
+# Query node health, uptime, and active peer registry:
+curl -s http://<NODE_IP>:8080/api/status | jq .
+
+# Send a direct PING command to worker node:
 curl -X POST http://<NODE_IP>:8080/api/command \
   -H "Content-Type: application/json" \
   -d '{"command": "PING", "target_id": "node-1"}'
 
-# Execute an HTTP data transfer test with custom message:
+# Route command to a worker through the Master command proxy:
+curl -X POST http://<MASTER_IP>:9000/api/proxy/node-1/command \
+  -H "Content-Type: application/json" \
+  -d '{"command": "PING", "target_id": "node-1"}'
+
+# Execute an HTTP data transfer benchmark with custom payload:
 curl -X POST http://<NODE_IP>:8080/api/benchmark \
   -H "Content-Type: application/json" \
   -d '{"preset": "Custom", "data": "Sample benchmark content..."}'
 ```
 
-*(Replace `<NODE_IP>` with the actual IP address of the target worker node, e.g., `192.168.1.20`)*
+### 4.3 Real-Time WebSocket Telemetry Stream (Port 9000 / 8080)
+```bash
+# Stream live telemetry updates using Python:
+python3 -c '
+import asyncio, aiohttp
+
+async def listen():
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect("http://<MASTER_IP>:9000/ws") as ws:
+            print("Connected to telemetry stream. Waiting for updates...")
+            async for msg in ws:
+                data = msg.json()
+                print(f"[{data.get(\"type\")}] Node: {data.get(\"node_id\")} Peers: {list(data.get(\"peers\", {}).keys())}")
+
+asyncio.run(listen())
+'
+
+# Or using websocat CLI:
+websocat ws://<MASTER_IP>:9000/ws
+```
 
 ---
 
-## 5. Development, Type Checking & Testing
+## 5. Repository Layout & Codebase Structure
+
+```
+c2-wireless-poc/
+├── README.md                 # Primary system overview, hardware setup, and quickstart guide
+├── requirements.txt          # Runtime dependencies (aiohttp)
+├── requirements-dev.txt      # Development & verification tooling (mypy, pytest, pytest-asyncio)
+├── pytest.ini                # Pytest configuration, markers, and asyncio execution mode
+├── mypy.ini                  # Strict static typing rules and boundary checks
+│
+├── docs/                     # Detailed technical specifications
+│   ├── architecture.md       # Subsystem deep-dives, protocol flows, and Mermaid/ASCII diagrams
+│   ├── api.md                # Wire formats, JSON schemas, safety boundaries, and CLI recipes
+│   └── testing.md            # 3-tier testing architecture, fixtures, and authoring guidelines
+│
+├── scripts/                  # Operational launch & setup utilities
+│   ├── setup.sh              # Automatic environment & dependency bootstrap
+│   ├── run_master.sh         # Master ground station launcher with port configuration
+│   ├── run_worker.sh         # Worker node launcher with automatic/explicit master IP
+│   └── run_tests.sh          # Automated test suite and static type check executor
+│
+├── src/                      # Application source code
+│   ├── config.py             # Global constants, network defaults, and environment overrides
+│   ├── protocol.py           # Typed input parsers, boundaries, and validation dataclasses
+│   ├── tracker.py            # PeerTracker, NodeMetrics, and link quality mathematics
+│   ├── beacon.py             # UDPBeaconProtocol and BeaconService discovery loops
+│   ├── presentation.py       # Console ANSI color formatting and benchmark payload sinks
+│   ├── node.py               # C2NodeDaemon entry point and async lifecycle coordinator
+│   │
+│   ├── server/               # Network service layer
+│   │   ├── __init__.py       # Server module exports
+│   │   ├── commands.py       # Command dispatch & execution handlers (PING)
+│   │   ├── tcp.py            # Line-delimited TCP command socket server
+│   │   ├── ws.py             # WebSocketManager: live telemetry streaming & benchmarking
+│   │   └── rest.py           # HttpServer: aiohttp REST routing, CORS, and Master proxy
+│   │
+│   └── web/                  # Standalone offline web dashboard
+│       ├── index.html        # HTML structure & import map definitions
+│       ├── styles.css        # Strict clean light design system
+│       ├── app.js            # Reactive Alpine.js frontend logic
+│       └── vendor/           # Vendored offline libraries (Alpine.js)
+│
+└── tests/                    # 3-tier test suite
+    ├── conftest.py           # Shared fixtures, factories, and port allocators
+    ├── unit/                 # Hermetic unit tests (parsers, trackers, nodes, servers)
+    ├── integration/          # Hermetic in-process multi-node cluster flow tests
+    └── e2e/                  # Multi-process end-to-end integration tests over loopback
+```
+
+---
+
+## 6. Documentation Index
+
+For in-depth technical references and specifications, consult the dedicated documentation guides:
+
+* **[System Architecture Specification](docs/architecture.md):** Detailed subsystem breakdowns (`C2NodeDaemon`, `BeaconService`, `PeerTracker`, `TcpCommandServer`, `HttpServer`, `WebSocketManager`), moving window link quality mathematics (OWD, jitter, sequence gap packet loss), Mermaid sequence flows, and watchdog state machines.
+* **[Network Protocol & API Specification](docs/api.md):** Complete wire framing specifications, JSON schemas, payload safety limits, REST route descriptions, WebSocket action formats, and CLI testing recipes.
+* **[Testing Architecture & Verification Guide](docs/testing.md):** 3-tier testing pyramid overview (Unit, Hermetic Integration, E2E), fixture authoring standards, and mock socket patterns.
+
+---
+
+## 7. Development, Type Checking & Testing
 
 ### Installation
 
@@ -160,7 +252,7 @@ pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest, 
 
 ### Static Type Checking (mypy)
 
-Strict static typing is enforced across all core modules and tests:
+Strict static typing is enforced across all 24 source and test files:
 
 ```bash
 .venv/bin/mypy src tests
@@ -185,5 +277,3 @@ The testbed features a **3-tier testing architecture** (Hermetic Unit, Hermetic 
 # Or run directly via standalone script:
 .venv/bin/python3 tests/e2e/test_e2e.py
 ```
-
-> 📖 For detailed testing architecture, testbed requirements, and fixture authoring guides, see the **[Testing Architecture & Verification Guide](docs/testing.md)**.
