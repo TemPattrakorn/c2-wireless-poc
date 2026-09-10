@@ -62,7 +62,7 @@
                 <table class="metrics-table">
                   <tr>
                     <td>Transit Latency (OWD)</td>
-                    <td :style="(node.latency_ms ?? node.rtt_ms) < 20 ? 'color: var(--success)' : 'color: var(--warning)'" x-text="`${node.latency_ms ?? node.rtt_ms} ms`"></td>
+                    <td :style="node.latency_ms < 20 ? 'color: var(--success)' : 'color: var(--warning)'" x-text="`${node.latency_ms} ms`"></td>
                   </tr>
 
                   <tr>
