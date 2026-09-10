@@ -31,10 +31,18 @@ async def wait_until(
     timeout: float = 6.0,
     interval: float = 0.1,
     error_msg: str = "Condition not met before timeout",
+    procs: list[subprocess.Popen[bytes]] | None = None,
 ) -> Any:
     """Dynamically poll predicate until it returns a truthy value or timeout expires."""
     start = time.time()
     while time.time() - start < timeout:
+        if procs:
+            for p in procs:
+                if p.poll() is not None:
+                    err_out = p.stderr.read().decode("utf-8", errors="replace") if p.stderr else ""
+                    raise RuntimeError(
+                        f"Subprocess {p.args!r} exited prematurely with exit code {p.returncode}: {err_out}"
+                    )
         res = predicate()
         if asyncio.iscoroutine(res):
             res = await res
@@ -121,6 +129,13 @@ def c2_cluster(require_loopback_network: None) -> Generator[C2Cluster, None, Non
         stderr=subprocess.PIPE,
     )
 
+    # Startup health check: ensure processes did not exit immediately
+    time.sleep(0.3)
+    for p in [master_proc, worker_proc]:
+        if p.poll() is not None:
+            err_out = p.stderr.read().decode("utf-8", errors="replace") if p.stderr else ""
+            raise RuntimeError(f"Subprocess {p.args!r} crashed on startup with exit code {p.returncode}: {err_out}")
+
     cluster = C2Cluster(
         master_proc=master_proc,
         worker_proc=worker_proc,
@@ -183,6 +198,7 @@ async def test_e2e_udp_discovery(c2_cluster: C2Cluster) -> None:
             _check_discovery,
             timeout=8.0,
             error_msg="Master failed to auto-discover test-worker-1 via UDP beacon",
+            procs=[c2_cluster.master_proc, c2_cluster.worker_proc],
         )
 
         # Assert status format
