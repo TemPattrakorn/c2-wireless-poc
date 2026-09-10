@@ -196,4 +196,4 @@ open coverage_html/index.html   # On macOS
 # Or: xdg-open coverage_html/index.html  # On Linux
 ```
 
-> 📖 For detailed testing architecture, testbed requirements, fixture authoring guides, and CI/CD workflows, see the **[Testing Architecture & Verification Guide](docs/testing.md)**.
+> 📖 For detailed testing architecture, testbed requirements, fixture authoring guides, see the **[Testing Architecture & Verification Guide](docs/testing.md)**.
