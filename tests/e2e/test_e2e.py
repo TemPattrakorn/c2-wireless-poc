@@ -209,7 +209,8 @@ async def test_e2e_udp_discovery(c2_cluster: C2Cluster) -> None:
             assert m_status["role"] == "master"
             assert "test-worker-1" in m_status["peers"]
             worker_peer = m_status["peers"]["test-worker-1"]
-            assert "latency_ms" in worker_peer or "rtt_ms" in worker_peer
+            assert "latency_ms" in worker_peer
+            assert "rtt_ms" not in worker_peer
 
 
 @pytest.mark.e2e

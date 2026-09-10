@@ -221,8 +221,8 @@ class TestHermeticClusterFlow:
         mock_ws.closed = False
         mock_ws.__aiter__ = lambda self: msg_stream()
 
-        with patch("server.web.WebSocketResponse", return_value=mock_ws):
-            await master.http_server.handle_ws_session(req)
+        with patch("server.ws.web.WebSocketResponse", return_value=mock_ws):
+            await master.http_server.ws_manager.handle_ws_session(req)
 
         assert mock_ws.prepare.called
         assert mock_ws.send_json.called

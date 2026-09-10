@@ -98,9 +98,9 @@ def master_daemon() -> Any:
     return C2NodeDaemon(
         node_id="test-master-srv",
         role="master",
-        http_port=9000,
-        tcp_port=9877,
-        udp_port=9876,
+        http_port=get_ephemeral_port("tcp"),
+        tcp_port=get_ephemeral_port("tcp"),
+        udp_port=get_ephemeral_port("udp"),
     )
 
 
@@ -112,7 +112,43 @@ def worker_daemon() -> Any:
     return C2NodeDaemon(
         node_id="test-worker-srv",
         role="worker",
-        http_port=8080,
-        tcp_port=9877,
-        udp_port=9876,
+        http_port=get_ephemeral_port("tcp"),
+        tcp_port=get_ephemeral_port("tcp"),
+        udp_port=get_ephemeral_port("udp"),
     )
+
+
+@pytest.fixture
+async def aiohttp_client(require_loopback_network: None) -> Any:
+    """
+    Factory fixture: accepts a web.Application and returns a bound async TestClient.
+
+    Usage::
+
+        client = await aiohttp_client(master_daemon.http_server.app)
+        resp = await client.get("/api/status")
+        assert resp.status == 200
+        data = await resp.json()
+
+    The TestServer binds to an OS-assigned ephemeral port.  The fixture is
+    guarded by ``require_loopback_network`` so tests are auto-skipped in
+    sandboxed environments that block loopback socket creation.
+    """
+    from typing import AsyncGenerator, Callable
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    created: list[TestClient] = []
+
+    async def factory(app: web.Application) -> TestClient:
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        created.append(client)
+        return client
+
+    yield factory  # type: ignore[misc]
+
+    for client in created:
+        await client.close()

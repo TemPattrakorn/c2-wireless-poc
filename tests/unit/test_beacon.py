@@ -15,7 +15,7 @@ import pytest
 from beacon import BeaconService, UDPBeaconProtocol
 from conftest import create_dummy_beacon
 from protocol import BeaconMessage
-from tracker import PeerTracker
+from tracker import NodeMetrics, PeerTracker
 
 
 class TestUDPBeaconProtocol:
@@ -176,3 +176,31 @@ class TestBeaconService:
 
         assert svc.seq_num >= 1
         assert mock_transport.sendto.call_count >= 2
+
+    async def test_beacon_sender_unicast_to_peers(self, master_daemon: Any) -> None:
+        """Verify beacon sender transmits both broadcast and unicast to known peers."""
+        # Add a remote peer on a routed subnet
+        master_daemon.peers["worker-remote"] = NodeMetrics(
+            node_id="worker-remote",
+            role="worker",
+            ip="192.168.2.50",
+            http_port=8080,
+            tcp_port=9877,
+            last_seen=time.time(),
+        )
+
+        mock_transport = MagicMock()
+        master_daemon.beacon_service.running = True
+
+        task = asyncio.create_task(master_daemon.beacon_service.beacon_sender_loop(mock_transport))
+        await asyncio.sleep(0.05)
+        master_daemon.beacon_service.running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        destinations = [call[0][1] for call in mock_transport.sendto.call_args_list]
+        assert ("<broadcast>", master_daemon.udp_port) in destinations
+        assert ("192.168.2.50", master_daemon.udp_port) in destinations

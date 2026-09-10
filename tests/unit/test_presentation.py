@@ -85,3 +85,56 @@ class TestPresentationFormatting:
         assert len(captured) == 1
         assert "Custom sink test" in captured[0]
         assert "worker-sink" in captured[0]
+
+    def test_display_benchmark_payload_short(self) -> None:
+        """Verify short payloads are printed in full without truncation."""
+        short_data = "Hello C2 Wireless Network!"
+        with patch("sys.stdout") as mock_stdout:
+            display_benchmark_payload(
+                node_id="test-worker-srv",
+                role="worker",
+                preset="1KB",
+                data=short_data,
+                raw_bytes_len=len(short_data),
+                client_ts=1000.0,
+                sender_ip="192.168.1.50",
+                protocol="HTTP POST",
+            )
+            mock_stdout.write.assert_called_once()
+            output = mock_stdout.write.call_args[0][0]
+            assert "test-worker-srv (WORKER)" in output
+            assert "HTTP POST" in output
+            assert "192.168.1.50" in output
+            assert "1KB" in output
+            assert "Hello C2 Wireless Network!" in output
+            assert "truncated" not in output
+            mock_stdout.flush.assert_called_once()
+
+    def test_display_benchmark_payload_truncated(self) -> None:
+        """Verify large payloads are truncated with head/tail preview."""
+        # Payload > 1024 chars
+        large_data = ("A" * 256) + ("M" * 1680) + ("Z" * 64)
+        assert len(large_data) == 2000
+        with patch("sys.stdout") as mock_stdout:
+            display_benchmark_payload(
+                node_id="test-worker-srv",
+                role="worker",
+                preset="64KB",
+                data=large_data,
+                raw_bytes_len=2000,
+                client_ts=0.0,
+                sender_ip="10.0.0.1",
+                protocol="WebSocket Stream",
+            )
+            mock_stdout.write.assert_called_once()
+            output = mock_stdout.write.call_args[0][0]
+            assert "test-worker-srv (WORKER)" in output
+            assert "WebSocket Stream" in output
+            assert "10.0.0.1" in output
+            assert "64KB" in output
+            assert "A" * 256 in output
+            assert "... [truncated 1680 characters] ..." in output
+            assert "Z" * 64 in output
+            assert "M" * 1680 not in output
+            assert "Raw Size: 2000 bytes" in output
+            mock_stdout.flush.assert_called_once()
