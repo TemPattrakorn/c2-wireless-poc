@@ -20,8 +20,10 @@ logger = logging.getLogger("C2Beacon")
 
 
 class UDPBeaconProtocol(asyncio.DatagramProtocol):
-    """
-    asyncio DatagramProtocol for handling incoming UDP beacon datagrams.
+    """asyncio DatagramProtocol for handling incoming UDP beacon datagrams.
+
+    Args:
+        on_datagram: Callback invoked with the validated BeaconMessage and sender IP.
     """
 
     def __init__(self, on_datagram: Callable[[BeaconMessage, str], None]):
@@ -29,6 +31,11 @@ class UDPBeaconProtocol(asyncio.DatagramProtocol):
         self.transport: Optional[asyncio.DatagramTransport] = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        """Configure datagram transport and enable socket broadcast permission.
+
+        Args:
+            transport: Underlying asyncio datagram transport instance.
+        """
         if isinstance(transport, asyncio.DatagramTransport):
             self.transport = transport
             sock: Optional[socket.socket] = transport.get_extra_info("socket")
@@ -36,6 +43,12 @@ class UDPBeaconProtocol(asyncio.DatagramProtocol):
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
     def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
+        """Parse received datagram bytes and pass validated beacon to the callback.
+
+        Args:
+            data: Raw payload bytes received from the UDP socket.
+            addr: Tuple of remote IP address and port number.
+        """
         try:
             beacon = parse_beacon_datagram(data)
             self.on_datagram(beacon, addr[0])
@@ -46,9 +59,17 @@ class UDPBeaconProtocol(asyncio.DatagramProtocol):
 
 
 class BeaconService:
-    """
-    Manages UDP broadcast and unicast beacon transmission, incoming beacon ingestion,
-    and interaction with the PeerTracker.
+    """Manages UDP broadcast and unicast beacon transmission and peer ingestion.
+
+    Args:
+        node_id: Unique identifier for this node.
+        role: Operational role ('master' or 'worker').
+        http_port: HTTP port served by this node.
+        tcp_port: TCP command port served by this node.
+        udp_port: UDP port used for peer discovery broadcasts.
+        tracker: PeerTracker instance maintaining active peer metrics.
+        master_ip: Optional destination IP of the master node for directed unicast.
+        start_time: Boot epoch timestamp (seconds) for uptime reporting.
     """
 
     def __init__(
@@ -75,8 +96,11 @@ class BeaconService:
         self.last_master_contact = time.time() if self.role == "worker" else 0.0
 
     def handle_incoming_beacon(self, beacon: BeaconMessage, sender_ip: str) -> None:
-        """
-        Validate and ingest an incoming beacon datagram.
+        """Validate and ingest an incoming beacon datagram into the peer tracker.
+
+        Args:
+            beacon: Validated BeaconMessage received from peer.
+            sender_ip: Remote sender IP address.
         """
         sender_id = beacon.node_id
         if sender_id == self.node_id:
@@ -95,8 +119,10 @@ class BeaconService:
         self.tracker.update_peer(beacon, sender_ip)
 
     async def beacon_sender_loop(self, transport: asyncio.DatagramTransport) -> None:
-        """
-        Broadcasts presence and status periodically across subnet and unicasts to peers.
+        """Periodically broadcast presence over subnet and unicast to known peers.
+
+        Args:
+            transport: Active asyncio DatagramTransport used for packet transmission.
         """
         broadcast_addr = ("<broadcast>", self.udp_port)
         while self.running:

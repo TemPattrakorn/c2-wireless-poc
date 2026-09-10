@@ -25,7 +25,22 @@ def format_benchmark_banner(
     protocol: str,
     use_color: Optional[bool] = None,
 ) -> str:
-    """Format a console banner summarizing a data transfer benchmark with TTY color-awareness."""
+    """Format a console banner summarizing a data transfer benchmark with TTY color-awareness.
+
+    Args:
+        node_id: Node identifier of the receiving host.
+        role: Receiving host role ('master' or 'worker').
+        preset: Benchmark payload size label (e.g., '1KB', '64KB').
+        data: Payload content string received.
+        raw_bytes_len: Exact raw byte size of the transmission frame.
+        client_ts: Client dispatch epoch timestamp (seconds).
+        sender_ip: Source IP address of the sender.
+        protocol: Transport protocol string ('HTTP' or 'WebSocket').
+        use_color: Optional override for ANSI escape color codes. Defaults to TTY check.
+
+    Returns:
+        Formatted ASCII/ANSI terminal banner string.
+    """
     now = time.time()
     latency_ms = (now - client_ts) * 1000.0 if client_ts > 0 else 0.0
     time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
@@ -83,7 +98,20 @@ def display_benchmark_payload(
     sink: Optional[Callable[[str], None]] = None,
     use_color: Optional[bool] = None,
 ) -> None:
-    """Output the formatted benchmark banner to sink or stdout."""
+    """Output the formatted benchmark banner to a custom sink or sys.stdout.
+
+    Args:
+        node_id: Node identifier of the receiving host.
+        role: Receiving host role ('master' or 'worker').
+        preset: Benchmark payload size label (e.g., '1KB', '64KB').
+        data: Payload content string received.
+        raw_bytes_len: Exact raw byte size of the transmission frame.
+        client_ts: Client dispatch epoch timestamp (seconds).
+        sender_ip: Source IP address of the sender.
+        protocol: Transport protocol string ('HTTP' or 'WebSocket').
+        sink: Optional callable receiving the formatted banner string.
+        use_color: Optional override for ANSI color formatting.
+    """
     banner = format_benchmark_banner(
         node_id=node_id,
         role=role,

@@ -5,8 +5,8 @@ Runs identically on PC0 (Master Ground Station) and PC1..PCn (Remote Field Worke
 Coordinated through collaborating services:
 - PeerTracker (src/tracker.py): Tracks peer registry and rolling link quality metrics.
 - BeaconService (src/beacon.py): Handles UDP auto-discovery beacon broadcast & unicast.
-- TcpCommandServer (src/server.py): Serves line-delimited TCP command interface.
-- HttpServer (src/server.py): Serves aiohttp HTTP REST, static web dashboard, and WebSocket streaming.
+- TcpCommandServer (src/server/tcp.py): Serves line-delimited TCP command interface.
+- HttpServer (src/server/rest.py): Serves aiohttp HTTP REST, static web dashboard, and WebSocket streaming.
 """
 
 from __future__ import annotations
@@ -36,7 +36,11 @@ __all__ = [
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """Configure standard logging format and handler for C2 node runtime."""
+    """Configure standard logging format and handler for C2 node runtime.
+
+    Args:
+        level: Logging severity threshold level (defaults to logging.INFO).
+    """
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
@@ -48,10 +52,18 @@ logger = logging.getLogger("C2Node")
 
 
 class C2NodeDaemon:
-    """
-    Universal C2 Node Daemon coordinator.
+    """Universal C2 Node Daemon coordinator.
+
     Orchestrates UDP beacon discovery, TCP commands, HTTP/WebSocket serving,
     and fail-safe watchdog routines across collaborating subsystems.
+
+    Args:
+        node_id: Unique identifier for this node.
+        role: Operational role ('master' or 'worker').
+        http_port: HTTP REST and WebSocket listening port.
+        tcp_port: Line-delimited TCP command socket port.
+        udp_port: UDP peer auto-discovery broadcast port.
+        master_ip: Optional target IP for directed unicast registration to master.
     """
 
     def __init__(
@@ -111,7 +123,11 @@ class C2NodeDaemon:
         )
 
     def _determine_local_ip(self) -> str:
-        """Determine outbound IP address by probing master or gateway."""
+        """Determine outbound IP address by probing master or default route.
+
+        Returns:
+            Resolved local IPv4 address string (e.g., '192.168.1.50' or '127.0.0.1').
+        """
         probe_host = self.master_ip if self.master_ip else config.dns_probe_host
         probe_port = self.udp_port if self.master_ip else config.dns_probe_port
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -126,11 +142,19 @@ class C2NodeDaemon:
         return ip
 
     def _execute_command(self, req: C2CommandRequest) -> Dict[str, Any]:
+        """Dispatch a validated C2 command request to standard command executor.
+
+        Args:
+            req: Validated C2CommandRequest structure.
+
+        Returns:
+            Execution response dictionary.
+        """
         return execute_standard_command(req, self.node_id)
 
     # --- Fail-Safe Watchdog (Worker Only) ---
     async def failsafe_watchdog_loop(self) -> None:
-        """Monitors contact with C2 Master. Logs warning if connection drops."""
+        """Monitor contact with C2 Master and log warning if communication drops."""
         while self.running:
             await asyncio.sleep(config.failsafe_check_interval_sec)
             if self.role == "worker" and self.master_ip:
@@ -141,8 +165,10 @@ class C2NodeDaemon:
                     )
 
 
+
     # --- Lifecycle ---
     async def start(self) -> None:
+        """Start all node subsystems concurrently and block until cancelled or stopped."""
         self.running = True
         self.beacon_service.running = True
         self.http_server.running = True
@@ -151,6 +177,7 @@ class C2NodeDaemon:
         # 1. UDP Discovery Endpoint
         udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Enable SO_REUSEPORT where supported (Linux/macOS) for seamless restarts
         if hasattr(socket, "SO_REUSEPORT"):
             try:
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -204,6 +231,7 @@ class C2NodeDaemon:
 # CLI Entry Point
 # ---------------------------------------------------------------------------
 def main() -> None:
+    """Parse CLI flags, initialize node daemon instance, and execute event loop."""
     setup_logging()
     parser = argparse.ArgumentParser(description="Universal C2 Wireless Network Node Daemon")
     parser.add_argument(
