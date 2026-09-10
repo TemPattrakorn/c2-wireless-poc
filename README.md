@@ -1,6 +1,6 @@
 # C2 Wireless Network Proof-of-Concept Testbed
 
-A lightweight, zero-dependency software suite to validate and benchmark wireless communications for a Command and Control (C2) system.
+A lightweight software suite to validate and benchmark wireless communications for a Command and Control (C2) system.
 
 ---
 
@@ -155,7 +155,7 @@ Create a virtual environment and install dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt       # Runtime dependencies (aiohttp)
-pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest)
+pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest, pytest-asyncio)
 ```
 
 ### Static Type Checking (mypy)
@@ -166,12 +166,14 @@ Strict static typing is enforced across all core modules and tests:
 .venv/bin/mypy src tests
 ```
 
-### Unit & Untrusted Input Parser Tests (pytest)
+### Unit Tests (pytest)
 
-Run the test suite covering input validation edge cases (malformed JSON, corrupted data, type mismatches, out-of-range ports, injection attempts) and HTTP/WebSocket endpoints:
+Run the fast hermetic unit test suite (untrusted input validation, HTTP/WebSocket handlers, link tracker metrics, and config parsing):
 
 ```bash
-.venv/bin/pytest tests/ -m "not e2e" -v
+.venv/bin/pytest
+# Or explicitly targeting the unit directory:
+.venv/bin/pytest tests/unit -v
 ```
 
 ### End-to-End Automated System Verification
@@ -179,8 +181,7 @@ Run the test suite covering input validation edge cases (malformed JSON, corrupt
 Run the full multi-process end-to-end integration test (UDP auto-discovery, HTTP commands, data transfer benchmarks, WebSocket telemetry stream, static UI serving, and failsafe watchdog):
 
 ```bash
-.venv/bin/python3 -m tests.test_e2e
-# Or run all tests including e2e via pytest:
-.venv/bin/pytest tests/ -v
+.venv/bin/pytest -m e2e -v
+# Or run directly via standalone script:
+.venv/bin/python3 tests/e2e/test_e2e.py
 ```
-
