@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C2 Wireless Command & Control Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css">
+
+  <!-- Import Map maps bare specifier 'alpinejs' to local offline ESM module -->
+  <script type="importmap">
+  {
+    "imports": {
+      "alpinejs": "/static/vendor/alpine.esm.js"
+    }
+  }
+  </script>
+
+  <!-- Application entry point loaded as native ES Module -->
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body x-data="c2Dashboard" x-cloak>
+  <div class="container">
+    <!-- Header -->
+    <header class="header-bar">
+      <div class="header-title">
+        <h1>C2 Wireless Command & Control Dashboard</h1>
+        <div class="subtitle">Distributed Proof-of-Concept Testbed | Wireless Network Backbone</div>
+      </div>
+      <div class="header-meta">
+        <div class="badge" :class="wsStatus.includes('Online') ? 'badge-live' : 'badge-offline'">
+          <span class="badge-dot"></span>
+          <span x-text="wsStatus"></span>
+        </div>
+        <div class="global-actions">
+          <button class="btn-primary" @click="broadcastCommand('PING')">PING ALL</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Layout -->
+    <div class="dashboard-layout">
+      <!-- Left Column: Active Nodes & Event Logs -->
+      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <!-- Active Nodes Grid -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Active Wireless Nodes (<span x-text="peerList.length">0</span>)</h2>
+            <button class="btn-outline" @click="fetchNodeStatus(true)">Refresh</button>
+          </div>
+          <div class="nodes-grid">
+            <div x-show="peerList.length === 0" style="color: var(--text-muted); font-size: 0.875rem; padding: 1rem;">
+              Listening for node beacons over UDP 9876...
+            </div>
+            <template x-for="node in peerList" :key="node.id">
+              <div class="node-card">
+                <div class="node-card-top">
+                  <div>
+                    <div class="node-id" x-text="node.node_id"></div>
+                    <div class="node-ip" x-text="`${node.ip}:${node.http_port} (${node.role})`"></div>
+                  </div>
+                </div>
+                <table class="metrics-table">
+                  <tr>
+                    <td>Transit Latency (OWD)</td>
+                    <td :style="(node.latency_ms ?? node.rtt_ms) < 20 ? 'color: var(--success)' : 'color: var(--warning)'" x-text="`${node.latency_ms ?? node.rtt_ms} ms`"></td>
+                  </tr>
+
+                  <tr>
+                    <td>Wireless Jitter</td>
+                    <td x-text="`${node.jitter_ms} ms`"></td>
+                  </tr>
+                  <tr>
+                    <td>Packet Loss</td>
+                    <td :style="node.packet_loss_pct > 0 ? 'color: var(--danger)' : 'color: var(--text-main)'" x-text="`${node.packet_loss_pct}%`"></td>
+                  </tr>
+                  <tr>
+                    <td>CPU Load / Uptime</td>
+                    <td x-text="`${node.cpu_load} / ${Math.round(node.uptime_sec)}s`"></td>
+                  </tr>
+                </table>
+                <div class="node-actions">
+                  <button class="btn-outline" @click="sendNodeCommand(node.id, 'PING')">Ping</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Activity & Communication Log -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Activity & Network Log</h2>
+            <button class="btn-outline" @click="logs = []">Clear</button>
+          </div>
+          <div class="log-feed" x-ref="logFeed">
+            <template x-for="log in logs" :key="log.id">
+              <div class="log-line">
+                <span class="log-time" x-text="`[${log.time}]`"></span>
+                <span class="log-msg" x-text="log.msg"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Interactive Data Transfer Test Panel -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Data Transfer Lab (HTTP & WebSocket)</h2>
+        </div>
+        
+        <div class="form-group">
+          <label for="targetNode">Target Node</label>
+          <select id="targetNode" x-model="selectedTarget">
+            <option value="">Select target node...</option>
+            <template x-for="node in peerList" :key="node.id">
+              <option :value="node.id" x-text="`${node.id} (${node.ip}:${node.http_port})`"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Transfer Protocol</label>
+          <div class="button-group">
+            <button :class="selectedProtocol === 'HTTP' ? 'active' : ''" @click="selectProtocol('HTTP')">HTTP POST (JSON)</button>
+            <button :class="selectedProtocol === 'WS' ? 'active' : ''" @click="selectProtocol('WS')">WebSocket Stream</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Payload Size Preset</label>
+          <div class="button-group">
+            <button :class="selectedSizeLabel === '1KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('1KB', 1024)">1 KB</button>
+            <button :class="selectedSizeLabel === '16KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('16KB', 16384)">16 KB</button>
+            <button :class="selectedSizeLabel === '64KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('64KB', 65536)">64 KB</button>
+            <button :class="selectedSizeLabel === '256KB' ? 'size-btn active' : 'size-btn'" @click="selectPayloadSize('256KB', 262144)">256 KB</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <label for="benchCustomPayload">Payload Content</label>
+            <span class="byte-counter" x-text="byteCountText"></span>
+          </div>
+          <textarea id="benchCustomPayload" rows="4" x-model="payloadText" @input="selectedSizeLabel = 'Custom'" placeholder="Enter or paste custom payload data here..."></textarea>
+        </div>
+
+        <button class="btn-primary" style="justify-content: center; padding: 0.65rem;" @click="runDataTransferBenchmark()">
+          Run Benchmark Transfer
+        </button>
+
+        <!-- Benchmark Results Display -->
+        <div class="benchmark-result">
+          <div class="result-stat">
+            <span>Status:</span>
+            <span :style="{ color: bench.statusColor }" x-text="bench.status"></span>
+          </div>
+          <div class="result-stat">
+            <span>Round-Trip Latency:</span>
+            <span x-text="bench.rtt"></span>
+          </div>
+          <div class="result-stat">
+            <span>Transfer Throughput:</span>
+            <span x-text="bench.throughput"></span>
+          </div>
+          <div class="result-stat">
+            <span>Bytes Transferred:</span>
+            <span x-text="bench.bytes"></span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Echo Response Payload</label>
+          <pre class="payload-preview" x-text="bench.preview"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
