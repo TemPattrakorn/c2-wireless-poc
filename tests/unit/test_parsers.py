@@ -246,3 +246,35 @@ class TestWebSocketMessageParsing:
         payload = json.dumps({"action": "ws_benchmark", "timestamp": -5.0})
         with pytest.raises(C2ParseError, match="Field 'timestamp' must be >= 0.0"):
             parse_ws_message(payload)
+
+    def test_ws_non_string_fields(self) -> None:
+        for key in ["target_id", "preset", "data"]:
+            bad = {"action": "ws_benchmark", key: 12345}
+            with pytest.raises(C2ParseError, match=f"Field '{key}' must be a string or null"):
+                parse_ws_message(json.dumps(bad))
+
+
+class TestParserInternalEdgeCases:
+    def test_parse_json_dict_string_empty(self) -> None:
+        with pytest.raises(C2ParseError, match="is empty"):
+            parse_ws_message("   ")
+
+    def test_parse_json_dict_invalid_type(self) -> None:
+        with pytest.raises(C2ParseError, match="Expected str or bytes"):
+            parse_ws_message(12345)  # type: ignore
+
+    def test_validate_command_empty_or_non_string(self) -> None:
+        with pytest.raises(C2ParseError, match="Field 'command' must be a non-empty string"):
+            parse_tcp_command_frame(b'{"command": 123}')
+        with pytest.raises(C2ParseError, match="Field 'command' must be a non-empty string"):
+            parse_tcp_command_frame(b'{"command": "  "}')
+
+    def test_validate_command_non_string_target(self) -> None:
+        with pytest.raises(C2ParseError, match="Field 'target_id' must be a string"):
+            parse_tcp_command_frame(b'{"command": "PING", "target_id": 999}')
+
+    def test_benchmark_non_string_fields(self) -> None:
+        with pytest.raises(C2ParseError, match="Field 'preset' must be a string"):
+            parse_http_benchmark_payload(b'{"preset": 123}')
+        with pytest.raises(C2ParseError, match="Field 'data' must be a string"):
+            parse_http_benchmark_payload(b'{"data": ["not", "string"]}')

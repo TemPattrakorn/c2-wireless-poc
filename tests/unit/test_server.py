@@ -12,6 +12,7 @@ import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import make_mocked_request
 import pytest
@@ -20,26 +21,6 @@ from node import C2NodeDaemon, NodeMetrics
 from presentation import display_benchmark_payload
 
 
-@pytest.fixture
-def master_daemon() -> C2NodeDaemon:
-    return C2NodeDaemon(
-        node_id="test-master-srv",
-        role="master",
-        http_port=9000,
-        tcp_port=9877,
-        udp_port=9876,
-    )
-
-
-@pytest.fixture
-def worker_daemon() -> C2NodeDaemon:
-    return C2NodeDaemon(
-        node_id="test-worker-srv",
-        role="worker",
-        http_port=8080,
-        tcp_port=9877,
-        udp_port=9876,
-    )
 
 
 def make_json_request(
@@ -170,6 +151,24 @@ async def test_http_post_command_unknown(master_daemon: C2NodeDaemon) -> None:
     assert "Unknown command" in data["error"]
 
 
+async def test_error_middleware_unhandled_exception(master_daemon: C2NodeDaemon) -> None:
+    app = master_daemon.http_server.app
+    req = make_json_request(
+        app,
+        "POST",
+        "/api/command",
+        {"command": "PING"},
+    )
+    with patch.object(master_daemon.http_server, "command_handler", side_effect=RuntimeError("Unexpected DB crash")):
+        resp = await app._handle(req)
+
+    assert resp.status == 500
+    assert isinstance(resp, web.Response) and resp.text is not None
+    data = json.loads(resp.text)
+    assert data["status"] == "ERROR"
+    assert "Unexpected DB crash" in data["error"]
+
+
 async def test_http_post_benchmark_valid(master_daemon: C2NodeDaemon) -> None:
     payload = {
         "preset": "16KB",
@@ -270,6 +269,124 @@ async def test_http_master_proxy_command_not_found(master_daemon: C2NodeDaemon) 
     data = json.loads(resp.text)
     assert data["status"] == "ERROR"
     assert "not found in peer registry" in data["error"]
+
+
+async def test_http_master_proxy_command_remote_success(master_daemon: C2NodeDaemon) -> None:
+    master_daemon.peers["worker-remote-1"] = NodeMetrics(
+        node_id="worker-remote-1",
+        role="worker",
+        ip="192.168.1.55",
+        http_port=8080,
+        tcp_port=9877,
+        last_seen=100.0,
+    )
+    app = master_daemon.http_server.app
+    req = make_json_request(
+        app,
+        "POST",
+        "/api/proxy/worker-remote-1/command",
+        {"command": "PING"},
+    )
+    req.match_info["node_id"] = "worker-remote-1"
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"status": "ACK", "response": "PONG", "node_id": "worker-remote-1"})
+
+    mock_session = MagicMock()
+    mock_session.post.return_value.__aenter__.return_value = mock_resp
+    mock_session.__aenter__.return_value = mock_session
+
+    with patch("server.aiohttp.ClientSession", return_value=mock_session):
+        resp = await app._handle(req)
+
+    assert resp.status == 200
+    assert isinstance(resp, web.Response) and resp.text is not None
+    data = json.loads(resp.text)
+    assert data["status"] == "ACK"
+    assert data["node_id"] == "worker-remote-1"
+
+
+async def test_http_master_proxy_command_remote_client_error(master_daemon: C2NodeDaemon) -> None:
+    master_daemon.peers["worker-remote-2"] = NodeMetrics(
+        node_id="worker-remote-2",
+        role="worker",
+        ip="192.168.1.56",
+        http_port=8080,
+        tcp_port=9877,
+        last_seen=100.0,
+    )
+    app = master_daemon.http_server.app
+    req = make_json_request(
+        app,
+        "POST",
+        "/api/proxy/worker-remote-2/command",
+        {"command": "PING"},
+    )
+    req.match_info["node_id"] = "worker-remote-2"
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = aiohttp.ClientConnectionError("Connection refused")
+    mock_session.__aenter__.return_value = mock_session
+
+    with patch("server.aiohttp.ClientSession", return_value=mock_session):
+        resp = await app._handle(req)
+
+    assert resp.status == 502
+    assert isinstance(resp, web.Response) and resp.text is not None
+    data = json.loads(resp.text)
+    assert data["status"] == "ERROR"
+    assert "Failed to contact target node" in data["error"]
+
+
+async def test_http_master_proxy_command_remote_timeout(master_daemon: C2NodeDaemon) -> None:
+    master_daemon.peers["worker-remote-3"] = NodeMetrics(
+        node_id="worker-remote-3",
+        role="worker",
+        ip="192.168.1.57",
+        http_port=8080,
+        tcp_port=9877,
+        last_seen=100.0,
+    )
+    app = master_daemon.http_server.app
+    req = make_json_request(
+        app,
+        "POST",
+        "/api/proxy/worker-remote-3/command",
+        {"command": "PING"},
+    )
+    req.match_info["node_id"] = "worker-remote-3"
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = asyncio.TimeoutError()
+    mock_session.__aenter__.return_value = mock_session
+
+    with patch("server.aiohttp.ClientSession", return_value=mock_session):
+        resp = await app._handle(req)
+
+    assert resp.status == 504
+    assert isinstance(resp, web.Response) and resp.text is not None
+    data = json.loads(resp.text)
+    assert data["status"] == "ERROR"
+    assert "timed out" in data["error"]
+
+
+async def test_http_master_proxy_command_missing_node_id(master_daemon: C2NodeDaemon) -> None:
+    app = master_daemon.http_server.app
+    req = make_json_request(
+        app,
+        "POST",
+        "/api/proxy/ /command",
+        {"command": "PING"},
+    )
+    req.match_info["node_id"] = "   "
+
+    resp = await app._handle(req)
+    assert resp.status == 400
+    assert isinstance(resp, web.Response) and resp.text is not None
+    data = json.loads(resp.text)
+    assert data["status"] == "ERROR"
+    assert "Missing node_id" in data["error"]
 
 
 # ============================================================================
@@ -395,6 +512,82 @@ async def test_ws_telemetry_broadcast(master_daemon: C2NodeDaemon) -> None:
     assert telemetry["node_id"] == "test-master-srv"
 
 
+async def test_ws_session_binary_and_error_frames(master_daemon: C2NodeDaemon) -> None:
+    req = make_mocked_request("GET", "/ws", app=master_daemon.http_server.app)
+
+    bin_msg = MagicMock()
+    bin_msg.type = WSMsgType.BINARY
+    bin_msg.data = b"\x00\x01\x02\x03"
+
+    err_msg = MagicMock()
+    err_msg.type = WSMsgType.ERROR
+    err_msg.data = None
+
+    async def msg_iter() -> Any:
+        yield bin_msg
+        yield err_msg
+
+    mock_ws = MagicMock()
+    mock_ws.prepare = AsyncMock()
+    mock_ws.send_json = AsyncMock()
+    mock_ws.closed = False
+    mock_ws.exception.return_value = RuntimeError("Mock WS socket reset")
+    mock_ws.__aiter__ = lambda self: msg_iter()
+
+    with patch("server.web.WebSocketResponse", return_value=mock_ws):
+        await master_daemon.http_server.handle_ws_session(req)
+
+    assert mock_ws.prepare.called
+    assert mock_ws not in master_daemon.http_server.ws_clients
+
+
+async def test_ws_session_parse_error(master_daemon: C2NodeDaemon) -> None:
+    req = make_mocked_request("GET", "/ws", app=master_daemon.http_server.app)
+
+    invalid_msg = MagicMock()
+    invalid_msg.type = WSMsgType.TEXT
+    invalid_msg.data = json.dumps({"action": "unknown_action_xyz"})
+
+    async def msg_iter() -> Any:
+        yield invalid_msg
+
+    mock_ws = MagicMock()
+    mock_ws.prepare = AsyncMock()
+    mock_ws.send_json = AsyncMock()
+    mock_ws.closed = False
+    mock_ws.__aiter__ = lambda self: msg_iter()
+
+    with patch("server.web.WebSocketResponse", return_value=mock_ws):
+        await master_daemon.http_server.handle_ws_session(req)
+
+    assert mock_ws.send_json.called
+    err_call = mock_ws.send_json.call_args[0][0]
+    assert err_call["type"] == "error"
+    assert "Unsupported WebSocket action" in err_call["message"]
+
+
+async def test_ws_telemetry_broadcast_prunes_dead_clients(master_daemon: C2NodeDaemon) -> None:
+    dead_ws = MagicMock(spec=web.WebSocketResponse)
+    dead_ws.closed = False
+    dead_ws.send_json = AsyncMock(side_effect=ConnectionResetError("Peer closed"))
+
+    alive_ws = MagicMock(spec=web.WebSocketResponse)
+    alive_ws.closed = False
+    alive_ws.send_json = AsyncMock()
+
+    master_daemon.http_server.ws_clients.add(dead_ws)
+    master_daemon.http_server.ws_clients.add(alive_ws)
+    master_daemon.http_server.running = True
+
+    task = asyncio.create_task(master_daemon.http_server.ws_telemetry_broadcast_loop())
+    await asyncio.sleep(0.6)
+    master_daemon.http_server.running = False
+    await task
+
+    assert dead_ws not in master_daemon.http_server.ws_clients
+    assert alive_ws in master_daemon.http_server.ws_clients
+
+
 # ============================================================================
 # TCP Command Server
 # ============================================================================
@@ -418,6 +611,93 @@ async def test_tcp_command_client(master_daemon: C2NodeDaemon) -> None:
     resp = json.loads(b"".join(written_chunks).decode("utf-8").strip())
     assert resp["status"] == "ACK"
     assert resp["response"] == "PONG"
+
+
+async def test_tcp_command_client_empty_line(master_daemon: C2NodeDaemon) -> None:
+    reader = AsyncMock()
+    reader.readline.return_value = b""
+
+    writer = MagicMock()
+    writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+    writer.drain = AsyncMock()
+    writer.wait_closed = AsyncMock()
+    written_chunks = []
+    writer.write = lambda data: written_chunks.append(data)
+
+    await master_daemon.tcp_server.handle_client(reader, writer)
+    assert len(written_chunks) == 0
+
+
+async def test_tcp_command_client_exception_in_handler(master_daemon: C2NodeDaemon) -> None:
+    reader = AsyncMock()
+    reader.readline.return_value = json.dumps({"command": "PING"}).encode("utf-8") + b"\n"
+
+    writer = MagicMock()
+    writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+    writer.drain = AsyncMock()
+    writer.wait_closed = AsyncMock()
+
+    written_chunks = []
+    writer.write = lambda data: written_chunks.append(data)
+
+    with patch.object(master_daemon.tcp_server, "command_handler", side_effect=RuntimeError("Handler crashed")):
+        await master_daemon.tcp_server.handle_client(reader, writer)
+
+    assert len(written_chunks) > 0
+    resp = json.loads(b"".join(written_chunks).decode("utf-8").strip())
+    assert resp["status"] == "ERROR"
+    assert "Handler crashed" in resp["error"]
+
+
+async def test_tcp_command_client_connection_error(master_daemon: C2NodeDaemon) -> None:
+    reader = AsyncMock()
+    reader.readline.side_effect = ConnectionResetError("Connection lost")
+
+    writer = MagicMock()
+    writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+    writer.close = MagicMock()
+    writer.wait_closed = AsyncMock(side_effect=ConnectionResetError("Socket broken"))
+
+    await master_daemon.tcp_server.handle_client(reader, writer)
+    assert writer.close.called
+
+
+async def test_tcp_server_start_stop(master_daemon: C2NodeDaemon) -> None:
+    mock_srv = AsyncMock()
+    mock_srv.close = MagicMock()
+    with patch("server.asyncio.start_server", AsyncMock(return_value=mock_srv)):
+        srv = await master_daemon.tcp_server.start()
+        assert srv is mock_srv
+        assert master_daemon.tcp_server.running
+
+        await master_daemon.tcp_server.stop()
+        assert not master_daemon.tcp_server.running
+        assert mock_srv.close.called
+
+
+async def test_http_server_start_and_cleanup(master_daemon: C2NodeDaemon) -> None:
+    mock_runner = AsyncMock()
+    mock_site = AsyncMock()
+
+    with (
+        patch("server.web.AppRunner", return_value=mock_runner),
+        patch("server.web.TCPSite", return_value=mock_site),
+    ):
+        await master_daemon.http_server.start()
+        assert master_daemon.http_server.running
+        assert mock_runner.setup.called
+        assert mock_site.start.called
+
+        # Add a mock active ws
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.close = AsyncMock()
+        master_daemon.http_server.ws_clients.add(mock_ws)
+
+        await master_daemon.http_server.cleanup()
+        assert not master_daemon.http_server.running
+        assert mock_ws.close.called
+        assert mock_runner.cleanup.called
 
 
 # ============================================================================
