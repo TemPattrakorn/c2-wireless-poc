@@ -82,6 +82,7 @@ class TestUDPBeaconProtocol:
 
 class TestBeaconService:
     def test_service_initialization(self) -> None:
+        """Verify initial state and master contact tracking of BeaconService for worker vs master."""
         tracker = PeerTracker()
         svc_worker = BeaconService(
             node_id="worker-init",

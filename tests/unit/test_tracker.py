@@ -16,6 +16,7 @@ from tracker import NodeMetrics, PeerTracker
 
 class TestNodeMetrics:
     def test_node_metrics_defaults(self) -> None:
+        """Verify NodeMetrics default zero initialization for rolling metrics."""
         metrics = NodeMetrics(
             node_id="node-a",
             role="worker",
@@ -34,11 +35,13 @@ class TestNodeMetrics:
 
 class TestPeerTracker:
     def test_peer_tracker_initialization(self) -> None:
+        """Verify PeerTracker initializes with custom history window size and empty registry."""
         tracker = PeerTracker(history_window=15)
         assert tracker.history_window == 15
         assert len(tracker.peers) == 0
 
     def test_update_peer_discovery(self) -> None:
+        """Verify peer discovery registers a new NodeMetrics entry with initial sequence."""
         tracker = PeerTracker(history_window=10)
         beacon = create_dummy_beacon(node_id="worker-test", seq=1)
         peer = tracker.update_peer(beacon, "10.0.0.5")
@@ -54,6 +57,7 @@ class TestPeerTracker:
         assert peer.jitter_ms == 0.0  # Only 1 sample, jitter is 0
 
     def test_rolling_latency_and_jitter(self) -> None:
+        """Verify consecutive beacon arrivals compute moving window average latency and jitter."""
         tracker = PeerTracker(history_window=5)
         now = time.time()
 
@@ -72,6 +76,7 @@ class TestPeerTracker:
         assert peer.packets_received == 2
 
     def test_packet_loss_calculation_with_skips(self) -> None:
+        """Verify sequence gaps correctly update rolling packet loss percentage."""
         tracker = PeerTracker(history_window=10)
 
         # Seq 1 received
@@ -90,6 +95,7 @@ class TestPeerTracker:
         assert peer.packet_loss_pct == 66.7
 
     def test_sequence_reset_recovery(self) -> None:
+        """Verify node restart with lower sequence number resets sequence loss history."""
         tracker = PeerTracker(history_window=10)
 
         # Start at seq 100 with some loss
@@ -109,6 +115,7 @@ class TestPeerTracker:
         assert peer.packet_loss_pct == 0.0
 
     def test_prune_stale_peers(self) -> None:
+        """Verify peers silent longer than timeout threshold are pruned from registry."""
         tracker = PeerTracker()
         now = time.time()
 
@@ -128,6 +135,7 @@ class TestPeerTracker:
         assert "active-node" in tracker.peers
 
     def test_to_dict_serialization(self) -> None:
+        """Verify to_dict returns a valid JSON-serializable dictionary with list histories."""
         tracker = PeerTracker()
         beacon = create_dummy_beacon(node_id="worker-ser", seq=5)
         tracker.update_peer(beacon, "192.168.1.15")
@@ -141,3 +149,4 @@ class TestPeerTracker:
         assert isinstance(peer_data["latency_history"], list)
         assert "latency_ms" in peer_data
         assert "rtt_ms" not in peer_data
+

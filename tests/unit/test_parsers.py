@@ -41,6 +41,7 @@ class TestBeaconParsing:
         }
 
     def test_valid_beacon(self) -> None:
+        """Verify valid beacon datagram parses into a typed BeaconMessage."""
         raw_dict = self._sample_beacon_dict()
         data = json.dumps(raw_dict).encode("utf-8")
         beacon = parse_beacon_datagram(data)
@@ -55,34 +56,41 @@ class TestBeaconParsing:
         assert beacon.cpu_load == 0.45
 
     def test_role_case_insensitivity(self) -> None:
+        """Verify role string is normalized to lowercase regardless of input casing."""
         raw_dict = self._sample_beacon_dict()
         raw_dict["role"] = "MASTER"
         beacon = parse_beacon_datagram(json.dumps(raw_dict).encode("utf-8"))
         assert beacon.role == "master"
 
     def test_corrupted_json(self) -> None:
+        """Verify truncated or malformed JSON raises C2ParseError."""
         with pytest.raises(C2ParseError, match="Malformed JSON"):
             parse_beacon_datagram(b'{"node_id": "test", "role": "wo')
 
     def test_invalid_utf8(self) -> None:
+        """Verify invalid UTF-8 byte sequences raise C2ParseError."""
         with pytest.raises(C2ParseError, match="Invalid UTF-8"):
             parse_beacon_datagram(b"\x80\x81\x82\xff")
 
     def test_non_dict_json(self) -> None:
+        """Verify JSON arrays, primitives, and literals raise C2ParseError."""
         for bad_payload in [b'["array", "of", "items"]', b'"string"', b"12345", b"null", b"true"]:
             with pytest.raises(C2ParseError, match="Expected JSON object"):
                 parse_beacon_datagram(bad_payload)
 
     def test_empty_payload(self) -> None:
+        """Verify zero-length datagrams raise C2ParseError."""
         with pytest.raises(C2ParseError, match="is empty"):
             parse_beacon_datagram(b"")
 
     def test_oversized_datagram(self) -> None:
+        """Verify datagrams exceeding MAX_DATAGRAM_SIZE raise C2ParseError."""
         huge_bytes = b" " * (MAX_DATAGRAM_SIZE + 1)
         with pytest.raises(C2ParseError, match="exceeds maximum permitted length"):
             parse_beacon_datagram(huge_bytes)
 
     def test_missing_or_invalid_node_id(self) -> None:
+        """Verify missing, empty, non-string, or oversized node_id fields raise C2ParseError."""
         raw = self._sample_beacon_dict()
         del raw["node_id"]
         with pytest.raises(C2ParseError, match="Field 'node_id' must be a non-empty string"):
@@ -101,12 +109,14 @@ class TestBeaconParsing:
             parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
 
     def test_invalid_role(self) -> None:
+        """Verify role strings not in VALID_ROLES raise C2ParseError."""
         raw = self._sample_beacon_dict()
         raw["role"] = "super-admin"
         with pytest.raises(C2ParseError, match="Field 'role' must be one of"):
             parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
 
     def test_invalid_sequence_number(self) -> None:
+        """Verify negative, non-integer, or boolean sequence numbers raise C2ParseError."""
         raw = self._sample_beacon_dict()
         for bad_seq in [-1, "12", 3.14, True, False, None]:
             raw["seq"] = bad_seq
@@ -114,6 +124,7 @@ class TestBeaconParsing:
                 parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
 
     def test_invalid_ports(self) -> None:
+        """Verify port numbers outside 1..65535 or non-integers raise C2ParseError."""
         raw = self._sample_beacon_dict()
         for bad_port in [0, -8080, 65536, 100000, "8080", True, False]:
             raw["http_port"] = bad_port
@@ -121,12 +132,14 @@ class TestBeaconParsing:
                 parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
 
     def test_beacon_ignores_state_field(self) -> None:
+        """Verify arbitrary extra attributes like state are ignored during beacon validation."""
         raw = self._sample_beacon_dict()
         raw["state"] = "FLYING_HIGH"
         beacon = parse_beacon_datagram(json.dumps(raw).encode("utf-8"))
         assert not hasattr(beacon, "state")
 
     def test_nan_or_inf_cpu_load(self) -> None:
+        """Verify non-finite float values like NaN for cpu_load raise C2ParseError."""
         raw = self._sample_beacon_dict()
         # In JSON, NaN/Inf are parsed if literal or via float representation
         data = b'{"node_id":"w1","role":"worker","seq":1,"timestamp":100,"start_time":50,"http_port":8080,"tcp_port":9877,"cpu_load":NaN}'
@@ -136,6 +149,7 @@ class TestBeaconParsing:
 
 class TestTcpCommandParsing:
     def test_valid_commands(self) -> None:
+        """Verify valid TCP command frames parse into C2CommandRequest."""
         for cmd in ["PING", "ping"]:
             data = json.dumps({"command": cmd, "target_id": "node-1", "args": {"key": "val"}}).encode("utf-8")
             req = parse_tcp_command_frame(data)
@@ -144,12 +158,14 @@ class TestTcpCommandParsing:
             assert req.args == {"key": "val"}
 
     def test_rejected_commands(self) -> None:
+        """Verify unsupported or legacy command verbs raise C2ParseError."""
         for cmd in ["ARM", "SAFE", "ESTOP", "STATUS", "REBOOT", "arm", "safe", "estop"]:
             data = json.dumps({"command": cmd}).encode("utf-8")
             with pytest.raises(C2ParseError, match=f"Unknown command '{cmd.upper()}'"):
                 parse_tcp_command_frame(data)
 
     def test_default_values(self) -> None:
+        """Verify omitted TCP target_id and args default to 'all' and empty dict."""
         data = json.dumps({"command": "PING"}).encode("utf-8")
         req = parse_tcp_command_frame(data)
         assert req.command == "PING"
@@ -157,16 +173,19 @@ class TestTcpCommandParsing:
         assert req.args == {}
 
     def test_unknown_command(self) -> None:
+        """Verify arbitrary unrecognized command strings raise C2ParseError."""
         data = json.dumps({"command": "REBOOT_SYSTEM"}).encode("utf-8")
         with pytest.raises(C2ParseError, match="Unknown command 'REBOOT_SYSTEM'"):
             parse_tcp_command_frame(data)
 
     def test_invalid_args_type(self) -> None:
+        """Verify non-dictionary args fields in TCP frames raise C2ParseError."""
         data = json.dumps({"command": "PING", "args": ["invalid", "list"]}).encode("utf-8")
         with pytest.raises(C2ParseError, match="Field 'args' must be a JSON object"):
             parse_tcp_command_frame(data)
 
     def test_oversized_tcp_frame(self) -> None:
+        """Verify TCP command lines exceeding MAX_TCP_FRAME_SIZE raise C2ParseError."""
         huge = b"A" * (MAX_TCP_FRAME_SIZE + 1)
         with pytest.raises(C2ParseError, match="exceeds maximum permitted length"):
             parse_tcp_command_frame(huge)
@@ -174,6 +193,7 @@ class TestTcpCommandParsing:
 
 class TestHttpPayloadParsing:
     def test_valid_command_payload(self) -> None:
+        """Verify valid HTTP JSON command bodies parse into C2CommandRequest."""
         body = json.dumps({"command": "PING", "target_id": "node-2"}).encode("utf-8")
         req = parse_http_command_payload(body)
         assert isinstance(req, C2CommandRequest)
@@ -181,16 +201,19 @@ class TestHttpPayloadParsing:
         assert req.target_id == "node-2"
 
     def test_http_command_rejected(self) -> None:
+        """Verify unapproved HTTP operational commands raise C2ParseError."""
         for cmd in ["ARM", "SAFE", "ESTOP", "STATUS"]:
             body = json.dumps({"command": cmd}).encode("utf-8")
             with pytest.raises(C2ParseError, match=f"Unknown command '{cmd}'"):
                 parse_http_command_payload(body)
 
     def test_http_command_malformed(self) -> None:
+        """Verify broken JSON bodies sent to HTTP command endpoint raise C2ParseError."""
         with pytest.raises(C2ParseError):
             parse_http_command_payload(b"{not json")
 
     def test_valid_benchmark_payload(self) -> None:
+        """Verify valid HTTP benchmark payload bodies parse into BenchmarkRequest."""
         body = json.dumps({
             "preset": "64KB",
             "client_timestamp": 1700000000.5,
@@ -203,6 +226,7 @@ class TestHttpPayloadParsing:
         assert len(req.data) == 1024
 
     def test_benchmark_default_fields(self) -> None:
+        """Verify empty JSON benchmark bodies populate default preset, timestamp, and data."""
         body = b"{}"
         req = parse_http_benchmark_payload(body)
         assert req.preset == "Custom"
@@ -210,6 +234,7 @@ class TestHttpPayloadParsing:
         assert req.data == ""
 
     def test_benchmark_invalid_timestamp(self) -> None:
+        """Verify non-numeric client timestamps in HTTP benchmark bodies raise C2ParseError."""
         body = json.dumps({"client_timestamp": "invalid_time"}).encode("utf-8")
         with pytest.raises(C2ParseError, match="Field 'client_timestamp' must be numeric"):
             parse_http_benchmark_payload(body)
@@ -217,6 +242,7 @@ class TestHttpPayloadParsing:
 
 class TestWebSocketMessageParsing:
     def test_valid_ws_benchmark(self) -> None:
+        """Verify valid ws_benchmark message frames parse into WsBenchmarkRequest."""
         payload = json.dumps({
             "action": "ws_benchmark",
             "target_id": "node-3",
@@ -233,21 +259,25 @@ class TestWebSocketMessageParsing:
         assert req.data == "payload_data"
 
     def test_ws_unknown_action(self) -> None:
+        """Verify unsupported WebSocket action verbs raise C2ParseError."""
         payload = json.dumps({"action": "drop_database"})
         with pytest.raises(C2ParseError, match="Unsupported WebSocket action 'drop_database'"):
             parse_ws_message(payload)
 
     def test_ws_missing_action(self) -> None:
+        """Verify WebSocket messages lacking an action field raise C2ParseError."""
         payload = json.dumps({"data": "no_action"})
         with pytest.raises(C2ParseError, match="Field 'action' must be a non-empty string"):
             parse_ws_message(payload)
 
     def test_ws_invalid_timestamp(self) -> None:
+        """Verify negative timestamps in WebSocket messages raise C2ParseError."""
         payload = json.dumps({"action": "ws_benchmark", "timestamp": -5.0})
         with pytest.raises(C2ParseError, match="Field 'timestamp' must be >= 0.0"):
             parse_ws_message(payload)
 
     def test_ws_non_string_fields(self) -> None:
+        """Verify non-string target_id, preset, and data values raise C2ParseError."""
         for key in ["target_id", "preset", "data"]:
             bad = {"action": "ws_benchmark", key: 12345}
             with pytest.raises(C2ParseError, match=f"Field '{key}' must be a string or null"):
@@ -256,24 +286,29 @@ class TestWebSocketMessageParsing:
 
 class TestParserInternalEdgeCases:
     def test_parse_json_dict_string_empty(self) -> None:
+        """Verify whitespace string inputs raise C2ParseError."""
         with pytest.raises(C2ParseError, match="is empty"):
             parse_ws_message("   ")
 
     def test_parse_json_dict_invalid_type(self) -> None:
+        """Verify non-str non-bytes inputs raise C2ParseError."""
         with pytest.raises(C2ParseError, match="Expected str or bytes"):
             parse_ws_message(12345)  # type: ignore
 
     def test_validate_command_empty_or_non_string(self) -> None:
+        """Verify numeric or whitespace command names raise C2ParseError."""
         with pytest.raises(C2ParseError, match="Field 'command' must be a non-empty string"):
             parse_tcp_command_frame(b'{"command": 123}')
         with pytest.raises(C2ParseError, match="Field 'command' must be a non-empty string"):
             parse_tcp_command_frame(b'{"command": "  "}')
 
     def test_validate_command_non_string_target(self) -> None:
+        """Verify non-string target_id values in command frames raise C2ParseError."""
         with pytest.raises(C2ParseError, match="Field 'target_id' must be a string"):
             parse_tcp_command_frame(b'{"command": "PING", "target_id": 999}')
 
     def test_benchmark_non_string_fields(self) -> None:
+        """Verify non-string preset and data fields in benchmark payloads raise C2ParseError."""
         with pytest.raises(C2ParseError, match="Field 'preset' must be a string"):
             parse_http_benchmark_payload(b'{"preset": 123}')
         with pytest.raises(C2ParseError, match="Field 'data' must be a string"):
