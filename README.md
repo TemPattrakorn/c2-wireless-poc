@@ -155,7 +155,7 @@ Create a virtual environment and install dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt       # Runtime dependencies (aiohttp)
-pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest, pytest-asyncio)
+pip install -r requirements-dev.txt   # Development dependencies (mypy, pytest, pytest-asyncio, pytest-cov)
 ```
 
 ### Static Type Checking (mypy)
@@ -166,22 +166,34 @@ Strict static typing is enforced across all core modules and tests:
 .venv/bin/mypy src tests
 ```
 
-### Unit Tests (pytest)
+### Automated Testing (pytest)
 
-Run the fast hermetic unit test suite (untrusted input validation, HTTP/WebSocket handlers, link tracker metrics, and config parsing):
+The testbed features a **3-tier testing architecture** (Hermetic Unit, Hermetic In-Process Integration, and Multi-Process E2E) with an enforced **85% minimum code coverage gate**:
 
 ```bash
+# 1. Run full hermetic test suite (Unit + Integration) with coverage enforcement (>= 85%):
 .venv/bin/pytest
-# Or explicitly targeting the unit directory:
+
+# 2. Run fast unit tests only:
 .venv/bin/pytest tests/unit -v
-```
 
-### End-to-End Automated System Verification
+# 3. Run hermetic in-process cluster integration tests:
+.venv/bin/pytest tests/integration -v
 
-Run the full multi-process end-to-end integration test (UDP auto-discovery, HTTP commands, data transfer benchmarks, WebSocket telemetry stream, static UI serving, and failsafe watchdog):
-
-```bash
+# 4. Run multi-process end-to-end integration tests (requires loopback socket permissions):
 .venv/bin/pytest -m e2e -v
 # Or run directly via standalone script:
 .venv/bin/python3 tests/e2e/test_e2e.py
 ```
+
+### Code Coverage & Detailed Guide
+
+Running `.venv/bin/pytest` outputs a terminal coverage summary and generates an interactive HTML report:
+
+```bash
+# View interactive HTML coverage report:
+open coverage_html/index.html   # On macOS
+# Or: xdg-open coverage_html/index.html  # On Linux
+```
+
+> 📖 For detailed testing architecture, testbed requirements, fixture authoring guides, and CI/CD workflows, see the **[Testing Architecture & Verification Guide](docs/testing.md)**.
