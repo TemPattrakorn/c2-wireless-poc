@@ -1,140 +1,32 @@
 """
-TCP command server and aiohttp HTTP/WebSocket server components for C2 node.
+HTTP REST API layer — CORS/error middleware, REST endpoints, static file serving,
+master command proxy, and HttpServer lifecycle.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
-import sys
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import aiohttp
-from aiohttp import WSCloseCode, WSMsgType, web
+from aiohttp import web
 
 from config import config
-from presentation import (
-    BANNER_MAX_FULL_DISPLAY_CHARS,
-    BANNER_PREVIEW_HEAD_CHARS,
-    BANNER_PREVIEW_TAIL_CHARS,
-    display_benchmark_payload,
-    format_benchmark_banner,
-)
+from presentation import display_benchmark_payload
 from protocol import (
     C2CommandRequest,
     C2ParseError,
     parse_http_benchmark_payload,
     parse_http_command_payload,
-    parse_tcp_command_frame,
-    parse_ws_message,
 )
 from tracker import PeerTracker
+from server.commands import execute_standard_command
+from server.ws import WebSocketManager
 
 logger = logging.getLogger("C2Server")
-
-
-
-def execute_standard_command(req: C2CommandRequest, node_id: str) -> Dict[str, Any]:
-    """Execute standard C2 commands (PING)."""
-    cmd = req.command
-    target_id = req.target_id
-    if target_id not in ("all", node_id):
-        return {
-            "status": "IGNORED",
-            "message": f"Command addressed to {target_id}, this node is {node_id}",
-            "node_id": node_id,
-        }
-    if cmd == "PING":
-        return {
-            "status": "ACK",
-            "response": "PONG",
-            "node_id": node_id,
-            "timestamp": time.time(),
-        }
-    return {
-        "status": "ERROR",
-        "error": f"Unsupported command '{cmd}'",
-        "node_id": node_id,
-    }
-
-
-class TcpCommandServer:
-    """
-    Manages line-delimited TCP command socket serving.
-    """
-
-    def __init__(
-        self,
-        node_id: str,
-        tcp_port: int,
-        command_handler: Optional[Callable[[C2CommandRequest], Dict[str, Any]]] = None,
-    ):
-        self.node_id = node_id
-        self.tcp_port = tcp_port
-        self.command_handler = (
-            command_handler
-            if command_handler is not None
-            else (lambda req: execute_standard_command(req, self.node_id))
-        )
-        self.server: Optional[asyncio.Server] = None
-        self.running = False
-
-    async def handle_client(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        client_addr = writer.get_extra_info("peername")
-        logger.info(f"[TCP] Command client connected from {client_addr}")
-        try:
-            line = await reader.readline()
-            if not line:
-                return
-            try:
-                cmd_req = parse_tcp_command_frame(line)
-                response_obj = self.command_handler(cmd_req)
-            except C2ParseError as e:
-                response_obj = {
-                    "status": "ERROR",
-                    "error": e.message,
-                    "field": e.field,
-                    "node_id": self.node_id,
-                }
-            except Exception as e:
-                response_obj = {
-                    "status": "ERROR",
-                    "error": str(e),
-                    "node_id": self.node_id,
-                }
-            resp_bytes = (json.dumps(response_obj) + "\n").encode("utf-8")
-            writer.write(resp_bytes)
-            await writer.drain()
-        except (ConnectionError, OSError) as e:
-            logger.debug(f"[TCP] Connection error with {client_addr}: {e}")
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except (ConnectionError, OSError) as e:
-                logger.debug(f"[TCP] Error closing socket for {client_addr}: {e}")
-
-    async def start(self) -> asyncio.Server:
-        self.running = True
-        self.server = await asyncio.start_server(
-            self.handle_client,
-            "0.0.0.0",
-            self.tcp_port,
-        )
-        return self.server
-
-    async def stop(self) -> None:
-        self.running = False
-        if self.server:
-            self.server.close()
-            await self.server.wait_closed()
 
 
 CORS_HEADERS: Dict[str, str] = {
@@ -226,7 +118,7 @@ class HttpServer:
         self.local_ip = local_ip
         self.tracker = tracker
         self.start_time = start_time if start_time is not None else time.time()
-        self.web_dir = web_dir or (Path(__file__).parent / "web")
+        self.web_dir = web_dir or (Path(__file__).parent.parent / "web")
         self.command_handler = (
             command_handler
             if command_handler is not None
@@ -235,15 +127,26 @@ class HttpServer:
         self.display_handler: Callable[..., None] = (
             display_handler
             if display_handler is not None
-            else self.display_benchmark_payload
+            else self._default_display_handler
         )
         self.running = False
-        self.ws_clients: Set[web.WebSocketResponse] = set()
+
+        self.ws_manager = WebSocketManager(
+            node_id=self.node_id,
+            role=self.role,
+            tracker=self.tracker,
+            display_handler=self.display_handler,
+            broadcast_interval=config.ws_broadcast_interval_sec,
+        )
+
+        # Expose ws_clients as a pass-through for backward compatibility with tests
+        # that directly manipulate master_daemon.http_server.ws_clients
+        self.ws_clients = self.ws_manager.ws_clients
 
         self.app: web.Application = self._create_web_app()
         self.app_runner: Optional[web.AppRunner] = None
 
-    def display_benchmark_payload(
+    def _default_display_handler(
         self,
         preset: str,
         data: str,
@@ -269,7 +172,7 @@ class HttpServer:
         app.router.add_get("/api/status", self.handle_http_status)
         app.router.add_post("/api/command", self.handle_http_command)
         app.router.add_post("/api/benchmark", self.handle_http_benchmark)
-        app.router.add_get("/ws", self.handle_ws_session)
+        app.router.add_get("/ws", self.ws_manager.handle_ws_session)
 
         # Master node serves web UI dashboard and provides worker command proxy
         if self.role == "master":
@@ -290,12 +193,11 @@ class HttpServer:
             )
 
         body = await request.read()
-        # Strictly validate command payload before proxy dispatch
-        parse_http_command_payload(body)
+        # Parse once for validation; reuse cmd_req for local branch, forward body bytes to remote
+        cmd_req = parse_http_command_payload(body)
 
         # Handle command locally if targeted at Master itself
         if target_node_id == self.node_id:
-            cmd_req = parse_http_command_payload(body)
             return web.json_response(self.command_handler(cmd_req))
 
         target_peer = self.tracker.peers.get(target_node_id)
@@ -397,89 +299,13 @@ class HttpServer:
                 return web.FileResponse(html_file)
         raise web.HTTPNotFound()
 
-    async def handle_ws_session(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-        self.ws_clients.add(ws)
-        logger.info(f"WebSocket client connected. Active connections: {len(self.ws_clients)}")
-
-        try:
-            async for msg in ws:
-                if msg.type == WSMsgType.TEXT:
-                    try:
-                        ws_req = parse_ws_message(msg.data)
-                        if ws_req.action == "ws_benchmark":
-                            client_ts = ws_req.timestamp if ws_req.timestamp > 0 else time.time()
-                            sender_ip = request.remote or "unknown"
-                            self.display_handler(
-                                preset=ws_req.preset or "Custom",
-                                data=ws_req.data or "",
-                                raw_bytes_len=len(msg.data),
-                                client_ts=client_ts,
-                                sender_ip=sender_ip,
-                                protocol="WebSocket Stream",
-                            )
-                            resp_data = {
-                                "type": "ws_benchmark_ack",
-                                "node_id": self.node_id,
-                                "bytes": len(msg.data),
-                                "client_timestamp": client_ts,
-                                "server_timestamp": time.time(),
-                            }
-                            await ws.send_json(resp_data)
-                    except C2ParseError as e:
-                        logger.debug(f"WS message parse error: {e}")
-                        await ws.send_json({"type": "error", "message": e.message})
-                    except Exception as e:
-                        logger.debug(f"WS message unexpected error: {e}")
-                elif msg.type == WSMsgType.BINARY:
-                    logger.debug(f"Ignoring unexpected binary WS frame ({len(msg.data)} bytes)")
-                elif msg.type == WSMsgType.ERROR:
-                    logger.debug(f"WebSocket connection error: {ws.exception()}")
-                    break
-        finally:
-            self.ws_clients.discard(ws)
-            logger.info(f"WebSocket client disconnected. Remaining: {len(self.ws_clients)}")
-
-        return ws
-
     async def ws_telemetry_broadcast_loop(self) -> None:
-        """Streams real-time telemetry frames concurrently to all connected WebSockets (2 Hz)."""
-        while self.running:
-            await asyncio.sleep(config.ws_broadcast_interval_sec)
-            if not self.ws_clients:
-                continue
-
-            telemetry_snapshot = {
-                "type": "telemetry_update",
-                "timestamp": time.time(),
-                "node_id": self.node_id,
-                "role": self.role,
-                "local_ip": self.local_ip,
-                "peers": self.tracker.to_dict(),
-            }
-
-            clients = list(self.ws_clients)
-            if not clients:
-                continue
-
-            async def _send(client: web.WebSocketResponse) -> Optional[web.WebSocketResponse]:
-                if client.closed:
-                    return client
-                try:
-                    await asyncio.wait_for(client.send_json(telemetry_snapshot), timeout=0.4)
-                    return None
-                except (ConnectionError, RuntimeError, OSError, asyncio.TimeoutError):
-                    return client
-
-            results = await asyncio.gather(*[_send(c) for c in clients], return_exceptions=True)
-            for res in results:
-                if isinstance(res, web.WebSocketResponse):
-                    self.ws_clients.discard(res)
-
+        """Forward to WebSocketManager broadcast loop (delegates internal running flag)."""
+        await self.ws_manager.ws_telemetry_broadcast_loop()
 
     async def start(self) -> None:
         self.running = True
+        self.ws_manager.running = True
         self.app_runner = web.AppRunner(self.app, access_log=None)
         await self.app_runner.setup()
         site = web.TCPSite(self.app_runner, "0.0.0.0", self.http_port)
@@ -487,8 +313,7 @@ class HttpServer:
 
     async def cleanup(self) -> None:
         self.running = False
-        for ws in list(self.ws_clients):
-            if not ws.closed:
-                await ws.close(code=WSCloseCode.GOING_AWAY, message=b"Server shutting down")
+        self.ws_manager.running = False
+        await self.ws_manager.close_all()
         if self.app_runner:
             await self.app_runner.cleanup()

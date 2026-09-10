@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass, field
+import itertools
 import logging
 import time
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -34,14 +35,6 @@ class NodeMetrics:
     seq_history: Deque[Tuple[int, int]] = field(default_factory=deque)
     latency_history: Deque[float] = field(default_factory=deque)
 
-    @property
-    def rtt_ms(self) -> float:
-        """Alias for backward compatibility with older consumers expecting rtt_ms."""
-        return self.latency_ms
-
-    @rtt_ms.setter
-    def rtt_ms(self, val: float) -> None:
-        self.latency_ms = val
 
 
 class PeerTracker:
@@ -97,10 +90,7 @@ class PeerTracker:
         peer.latency_ms = round(sum(peer.latency_history) / len(peer.latency_history), 1)
 
         if len(peer.latency_history) > 1:
-            diffs = [
-                abs(peer.latency_history[i] - peer.latency_history[i - 1])
-                for i in range(1, len(peer.latency_history))
-            ]
+            diffs = [abs(b - a) for a, b in itertools.pairwise(peer.latency_history)]
             peer.jitter_ms = round(sum(diffs) / len(diffs), 2)
 
         # Packet loss calculation from sequence delta
@@ -143,8 +133,6 @@ class PeerTracker:
             d = asdict(peer)
             d["seq_history"] = list(peer.seq_history)
             d["latency_history"] = list(peer.latency_history)
-            # Maintain backward compatibility for consumers looking for rtt_ms
-            d["rtt_ms"] = peer.latency_ms
             result[peer_id] = d
         return result
 
