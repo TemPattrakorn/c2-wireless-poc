@@ -13,26 +13,6 @@ from aiohttp.test_utils import make_mocked_request
 from node import C2NodeDaemon
 
 
-@pytest.fixture
-def master_daemon() -> C2NodeDaemon:
-    return C2NodeDaemon(
-        node_id="test-master-web",
-        role="master",
-        http_port=9000,
-        tcp_port=9877,
-        udp_port=9876,
-    )
-
-
-@pytest.fixture
-def worker_daemon() -> C2NodeDaemon:
-    return C2NodeDaemon(
-        node_id="test-worker-web",
-        role="worker",
-        http_port=8080,
-        tcp_port=9877,
-        udp_port=9876,
-    )
 
 
 async def test_master_serves_html_with_importmap(master_daemon: C2NodeDaemon) -> None:
