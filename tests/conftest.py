@@ -1,26 +1,63 @@
 """
 Global pytest configuration and fixtures for C2 Wireless PoC test suite.
-Provides native execution for async test functions without requiring third-party plugins.
+Provides dynamic ephemeral port allocation and loopback network capability checks.
+Async test execution is powered by pytest-asyncio.
 """
 
 from __future__ import annotations
 
-import asyncio
-import inspect
+import socket
 from typing import Any
 import pytest
 
 
-def pytest_pyfunc_call(pyfuncitem: pytest.Function) -> bool | None:
-    """
-    Hook to execute coroutine test functions seamlessly using asyncio.run().
-    Enables native `async def test_*()` without external plugins.
-    """
-    testfunction = pyfuncitem.obj
-    if inspect.iscoroutinefunction(testfunction):
-        argnames = pyfuncitem._fixtureinfo.argnames
-        funcargs = pyfuncitem.funcargs
-        testargs = {arg: funcargs[arg] for arg in argnames}
-        asyncio.run(testfunction(**testargs))
+def get_ephemeral_port(protocol: str = "tcp") -> int:
+    """Find an available ephemeral port allocated by the operating system."""
+    sock_type = socket.SOCK_STREAM if protocol == "tcp" else socket.SOCK_DGRAM
+    s = socket.socket(socket.AF_INET, sock_type)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+    finally:
+        s.close()
+
+
+def can_bind_and_connect_sockets() -> bool:
+    """Check if the current environment allows creating, binding, and connecting local sockets."""
+    server_sock = None
+    client_sock = None
+    try:
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(("127.0.0.1", 0))
+        server_sock.listen(1)
+        port = server_sock.getsockname()[1]
+
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_sock.settimeout(0.5)
+        client_sock.connect(("127.0.0.1", port))
         return True
-    return None
+    except Exception:
+        return False
+    finally:
+        if client_sock:
+            try:
+                client_sock.close()
+            except Exception:
+                pass
+        if server_sock:
+            try:
+                server_sock.close()
+            except Exception:
+                pass
+
+
+@pytest.fixture(scope="session")
+def require_loopback_network() -> None:
+    """Fixture ensuring the execution environment permits local loopback socket networking."""
+    if not can_bind_and_connect_sockets():
+        pytest.skip(
+            "Local socket networking is restricted in this execution environment "
+            "(e.g., sandbox or container without loopback permissions)."
+        )

@@ -19,8 +19,10 @@ from typing import Any, Awaitable, Callable, Generator
 import aiohttp
 import pytest
 
+from conftest import get_ephemeral_port
+
 PYTHON = sys.executable
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 SRC_DIR = BASE_DIR / "src"
 
 
@@ -55,10 +57,24 @@ class C2Cluster:
 
 
 @pytest.fixture(scope="module")
-def c2_cluster() -> Generator[C2Cluster, None, None]:
-    """Module-scoped fixture managing C2 master and worker subprocess lifecycle with guaranteed cleanup."""
-    m_http, m_tcp, m_udp = 9050, 9857, 9856
-    w_http, w_tcp, w_udp = 8051, 9858, 9856
+def c2_cluster(require_loopback_network: None) -> Generator[C2Cluster, None, None]:
+    """Module-scoped fixture managing C2 master and worker subprocess lifecycle with dynamic ports and guaranteed cleanup."""
+    used_ports: set[int] = set()
+
+    def _alloc_port(proto: str = "tcp") -> int:
+        for _ in range(50):
+            p = get_ephemeral_port(proto)
+            if p not in used_ports:
+                used_ports.add(p)
+                return p
+        raise RuntimeError("Failed to allocate unique ephemeral port")
+
+    m_http = _alloc_port("tcp")
+    m_tcp = _alloc_port("tcp")
+    m_udp = _alloc_port("udp")
+    w_http = _alloc_port("tcp")
+    w_tcp = _alloc_port("tcp")
+    w_udp = m_udp  # UDP beacon port is shared on loopback with SO_REUSEPORT
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
@@ -122,9 +138,23 @@ def c2_cluster() -> Generator[C2Cluster, None, None]:
         for p in [master_proc, worker_proc]:
             try:
                 p.terminate()
-                p.wait(timeout=1.5)
+                p.wait(timeout=2.0)
             except Exception:
-                p.kill()
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+            finally:
+                if p.stdout:
+                    try:
+                        p.stdout.close()
+                    except Exception:
+                        pass
+                if p.stderr:
+                    try:
+                        p.stderr.close()
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------
