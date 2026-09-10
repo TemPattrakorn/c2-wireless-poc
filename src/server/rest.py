@@ -43,7 +43,15 @@ async def cors_middleware(
     request: web.Request,
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
-    """Apply CORS headers to all responses and intercept OPTIONS preflight requests."""
+    """Apply CORS headers to all responses and intercept OPTIONS preflight requests.
+
+    Args:
+        request: Incoming aiohttp web request.
+        handler: Downstream request handler callable.
+
+    Returns:
+        Processed StreamResponse with standard CORS headers attached.
+    """
     if request.method == "OPTIONS":
         return web.Response(status=204, headers=CORS_HEADERS)
     try:
@@ -63,7 +71,19 @@ async def error_middleware(
     request: web.Request,
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
-    """Centralize exception handling: map C2ParseError to 400 and unexpected errors to 500."""
+    """Centralize exception handling: map C2ParseError to 400 and unexpected errors to 500.
+
+    Args:
+        request: Incoming aiohttp web request.
+        handler: Downstream request handler callable.
+
+    Returns:
+        JSON response detailing parse or system errors, or the handler response.
+
+    Raises:
+        web.HTTPException: Passes through standard aiohttp HTTP exceptions.
+        asyncio.CancelledError: Passes through task cancellation events.
+    """
     node_id = str(request.app.get(NODE_ID_KEY, request.app.get("node_id", "unknown")))
     try:
         return await handler(request)
@@ -94,8 +114,19 @@ async def error_middleware(
 
 
 class HttpServer:
-    """
-    aiohttp HTTP REST endpoints, static file serving, and WebSocket telemetry manager.
+    """aiohttp HTTP REST endpoints, static file serving, and WebSocket telemetry manager.
+
+    Args:
+        node_id: Identifier of the local node.
+        role: Node operational role ('master' or 'worker').
+        http_port: HTTP port to bind and listen on.
+        tcp_port: Port of the sibling TCP command server.
+        local_ip: Local network IP address.
+        tracker: PeerTracker instance maintaining cluster metrics.
+        start_time: Boot epoch timestamp (seconds) for uptime reporting.
+        web_dir: Optional filesystem path to static web assets directory.
+        command_handler: Optional custom handler for C2 command execution.
+        display_handler: Optional sink callable for benchmark payloads.
     """
 
     def __init__(
@@ -155,6 +186,16 @@ class HttpServer:
         sender_ip: str,
         protocol: str,
     ) -> None:
+        """Default sink forwarding benchmark payloads to standard presentation display.
+
+        Args:
+            preset: Payload benchmark size preset label.
+            data: Payload content received.
+            raw_bytes_len: Byte size of raw transmission.
+            client_ts: Client dispatch epoch timestamp.
+            sender_ip: Source IP address.
+            protocol: Communication protocol label.
+        """
         display_benchmark_payload(
             node_id=self.node_id,
             role=self.role,
@@ -167,6 +208,11 @@ class HttpServer:
         )
 
     def _create_web_app(self) -> web.Application:
+        """Construct and configure the aiohttp Application with routes and middleware.
+
+        Returns:
+            Frozen aiohttp Application instance ready for execution.
+        """
         app = web.Application(middlewares=[cors_middleware, error_middleware])
         app[NODE_ID_KEY] = self.node_id
         app.router.add_get("/api/status", self.handle_http_status)
@@ -184,7 +230,14 @@ class HttpServer:
         return app
 
     async def handle_proxy_command(self, request: web.Request) -> web.Response:
-        """Proxy a command request from browser/client to a remote worker node."""
+        """Proxy a command request from browser/client to a remote worker node.
+
+        Args:
+            request: Incoming HTTP request containing destination node_id in match_info.
+
+        Returns:
+            Proxied JSON response from target node or error JSON.
+        """
         target_node_id = request.match_info.get("node_id", "").strip()
         if not target_node_id:
             return web.json_response(
@@ -245,6 +298,14 @@ class HttpServer:
             )
 
     async def handle_http_status(self, request: web.Request) -> web.Response:
+        """Handle GET /api/status returning node identity, uptime, and peer metrics.
+
+        Args:
+            request: Incoming HTTP GET request.
+
+        Returns:
+            JSON response containing node state and peer registry snapshot.
+        """
         data = {
             "node_id": self.node_id,
             "role": self.role,
@@ -257,12 +318,28 @@ class HttpServer:
         return web.json_response(data)
 
     async def handle_http_command(self, request: web.Request) -> web.Response:
+        """Handle POST /api/command executing operational actions on this node.
+
+        Args:
+            request: Incoming HTTP POST request containing command JSON body.
+
+        Returns:
+            JSON response representing command execution results.
+        """
         body = await request.read()
         cmd_req = parse_http_command_payload(body)
         res = self.command_handler(cmd_req)
         return web.json_response(res)
 
     async def handle_http_benchmark(self, request: web.Request) -> web.Response:
+        """Handle POST /api/benchmark measuring data transfer throughput and latency.
+
+        Args:
+            request: Incoming HTTP POST request containing benchmark payload JSON.
+
+        Returns:
+            JSON response summarizing transmission size, latency, and processing time.
+        """
         recv_time = time.time()
         body = await request.read()
         bench_req = parse_http_benchmark_payload(body)
@@ -293,6 +370,17 @@ class HttpServer:
         return web.json_response(response_payload)
 
     async def handle_http_index(self, request: web.Request) -> web.StreamResponse:
+        """Serve index.html for master web dashboard requests to GET /.
+
+        Args:
+            request: Incoming HTTP GET request for dashboard root.
+
+        Returns:
+            FileResponse serving static HTML content.
+
+        Raises:
+            web.HTTPNotFound: If dashboard assets or master role are absent.
+        """
         if self.role == "master" and self.web_dir.exists():
             html_file = self.web_dir / "index.html"
             if html_file.exists():
@@ -304,6 +392,7 @@ class HttpServer:
         await self.ws_manager.ws_telemetry_broadcast_loop()
 
     async def start(self) -> None:
+        """Bind TCP socket and start serving HTTP and WebSocket traffic."""
         self.running = True
         self.ws_manager.running = True
         self.app_runner = web.AppRunner(self.app, access_log=None)
@@ -312,8 +401,10 @@ class HttpServer:
         await site.start()
 
     async def cleanup(self) -> None:
+        """Gracefully shut down active WebSockets and stop HTTP application runner."""
         self.running = False
         self.ws_manager.running = False
         await self.ws_manager.close_all()
         if self.app_runner:
             await self.app_runner.cleanup()
+

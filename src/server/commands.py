@@ -11,7 +11,15 @@ from protocol import C2CommandRequest
 
 
 def execute_standard_command(req: C2CommandRequest, node_id: str) -> Dict[str, Any]:
-    """Execute standard C2 commands (PING)."""
+    """Execute standard C2 operational commands (PING).
+
+    Args:
+        req: Validated C2CommandRequest containing command name and target.
+        node_id: Identifier of the executing node to evaluate target matching.
+
+    Returns:
+        Dictionary containing operational response status, payload, and node ID.
+    """
     cmd = req.command
     target_id = req.target_id
     if target_id not in ("all", node_id):
@@ -32,3 +40,4 @@ def execute_standard_command(req: C2CommandRequest, node_id: str) -> Dict[str, A
         "error": f"Unsupported command '{cmd}'",
         "node_id": node_id,
     }
+

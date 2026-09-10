@@ -18,9 +18,14 @@ logger = logging.getLogger("C2Server")
 
 
 class WebSocketManager:
-    """
-    Manages WebSocket client connections, benchmark message dispatch,
-    and real-time telemetry broadcasting at a configurable interval.
+    """Manages WebSocket client connections, benchmark handling, and telemetry pushes.
+
+    Args:
+        node_id: Local node identifier.
+        role: Local node operational role ('master' or 'worker').
+        tracker: PeerTracker instance containing live peer metrics.
+        display_handler: Callable invoked to render incoming benchmark payloads.
+        broadcast_interval: Interval in seconds between periodic telemetry pushes.
     """
 
     def __init__(
@@ -40,6 +45,14 @@ class WebSocketManager:
         self.running = False
 
     async def handle_ws_session(self, request: web.Request) -> web.WebSocketResponse:
+        """Handle incoming WebSocket connection lifecycle and message dispatch.
+
+        Args:
+            request: The aiohttp web request initiating the WebSocket handshake.
+
+        Returns:
+            Prepared WebSocketResponse after connection termination.
+        """
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self.ws_clients.add(ws)
@@ -86,7 +99,7 @@ class WebSocketManager:
         return ws
 
     async def ws_telemetry_broadcast_loop(self) -> None:
-        """Streams real-time telemetry frames concurrently to all connected WebSockets."""
+        """Stream real-time telemetry frames concurrently to all active WebSocket clients."""
         while self.running:
             await asyncio.sleep(self.broadcast_interval)
             if not self.ws_clients:
@@ -119,7 +132,8 @@ class WebSocketManager:
                     self.ws_clients.discard(res)
 
     async def close_all(self) -> None:
-        """Close all active WebSocket connections gracefully."""
+        """Gracefully close all active client WebSocket connections with GOING_AWAY code."""
         for ws in list(self.ws_clients):
             if not ws.closed:
                 await ws.close(code=WSCloseCode.GOING_AWAY, message=b"Server shutting down")
+

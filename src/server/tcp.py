@@ -16,8 +16,12 @@ logger = logging.getLogger("C2Server")
 
 
 class TcpCommandServer:
-    """
-    Manages line-delimited TCP command socket serving.
+    """Manages line-delimited TCP command socket serving and client connection lifecycles.
+
+    Args:
+        node_id: Identifier of the local node.
+        tcp_port: Port number to bind the TCP server socket to.
+        command_handler: Optional custom handler for dispatched C2 commands.
     """
 
     def __init__(
@@ -41,6 +45,12 @@ class TcpCommandServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        """Handle an incoming TCP connection, read a framed command line, and respond.
+
+        Args:
+            reader: Stream reader receiving client command line frames.
+            writer: Stream writer transmitting JSON command responses.
+        """
         client_addr = writer.get_extra_info("peername")
         logger.info(f"[TCP] Command client connected from {client_addr}")
         try:
@@ -76,6 +86,11 @@ class TcpCommandServer:
                 logger.debug(f"[TCP] Error closing socket for {client_addr}: {e}")
 
     async def start(self) -> asyncio.Server:
+        """Start listening for incoming TCP command client connections.
+
+        Returns:
+            The running asyncio.Server instance.
+        """
         self.running = True
         self.server = await asyncio.start_server(
             self.handle_client,
@@ -85,7 +100,9 @@ class TcpCommandServer:
         return self.server
 
     async def stop(self) -> None:
+        """Gracefully stop the TCP server and close listening sockets."""
         self.running = False
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+

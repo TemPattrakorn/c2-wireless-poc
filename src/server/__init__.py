@@ -1,8 +1,10 @@
-"""
-server package — public API surface for the C2 server components.
+"""C2 server package — public API surface for network services and HTTP/WS layers.
 
-Importing from `server` (e.g. `from server import HttpServer`) continues to work
-after the migration from the monolithic server.py to this package.
+Provides modular server components:
+- HttpServer: aiohttp REST API, static asset hosting, and proxy router.
+- TcpCommandServer: Line-delimited framing and command socket server.
+- WebSocketManager: Live telemetry broadcast loop and duplex benchmarking.
+- execute_standard_command: Core command execution dispatch logic.
 """
 
 from __future__ import annotations
